@@ -1231,8 +1231,18 @@ void rx_video_output_video_data(u32 uVehicleId, t_packet_header_video_segment* p
 {
    if ( g_bSearching )
       return;
-   if ( ! s_bDidSentAnyDataToVideoStreamerPipe && s_bEnableVideoStreamerOutput && s_bRxVideoOutputUsePipe )
-      log_line("[VideoTrace] rx_video_output_video_data: first call VID=%u, %d video bytes (streamer pipe enabled).", uVehicleId, video_data_length);
+   {
+      static bool s_bLoggedVideoOutputCall = false;
+      if ( ! s_bLoggedVideoOutputCall )
+      {
+         s_bLoggedVideoOutputCall = true;
+         log_line("[VideoTrace] rx_video_output_video_data: first call VID=%u, %d requested bytes, enable=%s, pipe_running=%s, sharedmem=%s.",
+            uVehicleId, video_data_length,
+            s_bEnableVideoStreamerOutput ? "Y" : "N",
+            s_bRxVideoOutputUsePipe ? "Y" : "N",
+            s_bRxVideoOutputUseSM ? "Y" : "N");
+      }
+   }
    (void)0;
 
    u8 uVideoStreamType = (pPHVS->uVideoStreamIndexAndType >> 4) & 0x0F;
