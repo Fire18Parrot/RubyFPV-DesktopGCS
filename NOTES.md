@@ -31,3 +31,9 @@ Updated: 2026-10-22 23:00 CEST. Branch: `refactor`. Preserve the `old` branch un
 1. Add a VTX firmware capability probe before requesting settings.
 2. Add a mode that skips full Ruby settings sync for telemetry-only OpenIPC VTX and documents it.
 3. Keep regression tests that distinguish software-only decode from live GCS rendering.
+## Fixes committed on `refactor` since handoff
+- `059f8df` stopped repeated vehicle-settings sync after five failed downloads.
+  This reduces repeated pairing warnings on telemetry-only VTX firmware without
+  claiming that settings synchronization succeeded.
+- Existing verification: compatibility 18/0 and ambient capability 3/0.
+  No live VTX settings or sustained-rendering validation is claimed here.
