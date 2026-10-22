@@ -83,6 +83,16 @@ float MenuItemRange::getCurrentValue()
    return m_ValueCurrent;
 }
 
+float MenuItemRange::getMinValue()
+{
+   return m_ValueMin;
+}
+
+float MenuItemRange::getMaxValue()
+{
+   return m_ValueMax;
+}
+
 void MenuItemRange::setCurrentValue(float val)
 {
    m_ValueCurrent = val;

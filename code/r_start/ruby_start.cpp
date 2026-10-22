@@ -52,7 +52,7 @@
 #include "../base/ruby_ipc.h"
 #include "../base/tx_powers.h"
 
-#if defined(HW_PLATFORM_RASPBERRY) || defined(HW_PLATFORM_RADXA)
+#if defined(HW_PLATFORM_RASPBERRY) || defined(HW_PLATFORM_RADXA) || defined(HW_PLATFORM_LINUX_GENERIC)
 #include "../base/ctrl_settings.h"
 #include "../utils/utils_controller.h"
 #include "../base/ctrl_interfaces.h"
@@ -67,7 +67,25 @@
 #include "first_boot.h"
 #include "r_test.h"
 
-static sem_t* s_pSemaphoreStarted = NULL; 
+static sem_t* s_pSemaphoreStarted = NULL;
+
+// Releases the semaphore that marks the start of the application.
+// On a generic Linux desktop the application can be started again after it
+// was stopped, so the semaphore has to be removed, otherwise every start
+// after the first one would be rejected. On the embedded platforms the
+// semaphore is left in place, it is removed only by a reboot.
+static void _release_start_semaphore()
+{
+   if ( (NULL == s_pSemaphoreStarted) || (SEM_FAILED == s_pSemaphoreStarted) )
+      return;
+
+   #if defined(HW_PLATFORM_LINUX_GENERIC)
+   sem_unlink("/RUBY_STARTED_SEMAPHORE");
+   #endif
+
+   sem_close(s_pSemaphoreStarted);
+   s_pSemaphoreStarted = NULL;
+}
 
 static int s_iBootCount = 0;
 
@@ -659,6 +677,33 @@ void _log_platform(bool bNewLine)
 }
 
 
+// Stops all the processes of the application.
+//
+// On the embedded platforms the application is managed as a service, so the
+// stop is done by the service manager. On a generic Linux desktop the
+// application is started by the user, so it has to be stopped by the user as
+// well. This is the stop: it asks every process to stop and it waits for
+// them, so that the resources (the window, the shared memory and the message
+// queues) are released.
+static void _stop_all_processes()
+{
+   printf("Ruby: Stopping the application...\n");
+   log_line("Stopping all the Ruby processes...");
+
+   // The user interface first, it is the one that has a window on the screen
+   hw_stop_process_graceful("ruby_central", 5000);
+   hw_stop_process_graceful("ruby_controller", 5000);
+   hw_stop_process_graceful("ruby_rt_station", 3000);
+   hw_stop_process_graceful("ruby_rt_router", 3000);
+   hw_stop_process_graceful("ruby_tx_rc", 3000);
+   hw_stop_process_graceful("ruby_rx_telemetry", 3000);
+   hw_stop_process_graceful("ruby_video_proc", 3000);
+   hw_stop_process_graceful("ruby_logger", 3000);
+
+   printf("Ruby: Application stopped.\n");
+   log_line("All the Ruby processes were stopped.");
+}
+
 int _step_process_cmd_line(int argc, char* argv[])
 {
    if ( strcmp(argv[argc-1], "-ver") == 0 )
@@ -737,6 +782,13 @@ int _step_process_cmd_line(int argc, char* argv[])
       return 1;
    }
 
+   if ( strcmp(argv[argc-1], "-stop") == 0 )
+   {
+      log_init("RubyStart");
+      _stop_all_processes();
+      return 1;
+   }
+
    if ( strcmp(argv[argc-1], "-test") == 0 )
    {
       start_test();
@@ -781,7 +833,7 @@ int _step_find_console()
    char *tty_name = ttyname(STDIN_FILENO);
    bool foundGoodConsole = false;
   
-   sprintf(szComm, "echo 'Ruby console to start in: [%s]' >> /tmp/ruby_boot.log", ((tty_name != NULL)?tty_name:"N/A"));
+   sprintf(szComm, "echo 'Ruby console to start in: [%s]' >> /tmp/ruby_boot.log 2>/dev/null 2>/dev/null", ((tty_name != NULL)?tty_name:"N/A"));
    hw_execute_bash_command_silent(szComm, NULL);
    printf("\nRuby: Start on console (%s)\n", ((tty_name != NULL)? tty_name:"N/A"));
    fflush(stdout);
@@ -793,18 +845,24 @@ int _step_find_console()
    if ( (NULL != tty_name) && strcmp(tty_name, "/dev/pts/0") == 0 )
       foundGoodConsole = true;
 
+   #if defined(HW_PLATFORM_LINUX_GENERIC)
+   // On a generic Linux desktop the application is started from a terminal,
+   // not from a virtual console, and any terminal is a good console.
+   foundGoodConsole = true;
+   #endif
+
    #if defined (HW_PLATFORM_RASPBERRY)
-   sprintf(szComm, "echo 'Ruby execute for Raspberry platform' >> /tmp/ruby_boot.log");
+   sprintf(szComm, "echo 'Ruby execute for Raspberry platform' >> /tmp/ruby_boot.log 2>/dev/null");
    hw_execute_bash_command_silent(szComm, NULL);
    #endif
 
    #if defined (HW_PLATFORM_RADXA)
-   sprintf(szComm, "echo 'Ruby execute for Radxa Zero 3 platform' >> /tmp/ruby_boot.log");
+   sprintf(szComm, "echo 'Ruby execute for Radxa Zero 3 platform' >> /tmp/ruby_boot.log 2>/dev/null");
    hw_execute_bash_command_silent(szComm, NULL);
    #endif
 
    #if defined(HW_PLATFORM_OPENIPC_CAMERA)
-   sprintf(szComm, "echo 'Ruby execute for OpenIPC platform' >> /tmp/ruby_boot.log");
+   sprintf(szComm, "echo 'Ruby execute for OpenIPC platform' >> /tmp/ruby_boot.log 2>/dev/null");
    hw_execute_bash_command_silent(szComm, NULL);
    foundGoodConsole = true;
    char szConsoleName[12];
@@ -812,18 +870,40 @@ int _step_find_console()
    tty_name = szConsoleName;
    #endif
 
+   #if defined(HW_PLATFORM_LINUX_GENERIC)
+   // On a generic Linux desktop the application can be started from any
+   // terminal, or with no terminal attached at all.
+   if ( ! foundGoodConsole )
+   #else
    if ( (NULL == tty_name) || (!foundGoodConsole) )
+   #endif
    {
-      sprintf(szComm, "echo 'Ruby execute in wrong console. Abort.' >> /tmp/ruby_boot.log");
+      sprintf(szComm, "echo 'Ruby execute in wrong console. Abort.' >> /tmp/ruby_boot.log 2>/dev/null");
       hw_execute_bash_command_silent(szComm, NULL);
       printf("\nRuby: Try to execute in wrong console (%s). Exiting.\n", tty_name != NULL ? tty_name:"N/A");
       fflush(stdout);
       return 0;
    }
    
-   sprintf(szComm, "echo 'Ruby check semaphore...' >> /tmp/ruby_boot.log");
+   sprintf(szComm, "echo 'Ruby check semaphore...' >> /tmp/ruby_boot.log 2>/dev/null");
    hw_execute_bash_command_silent(szComm, NULL);
    s_pSemaphoreStarted = sem_open("/RUBY_STARTED_SEMAPHORE", O_CREAT | O_EXCL, S_IWUSR | S_IRUSR, 0);
+   #if defined(HW_PLATFORM_LINUX_GENERIC)
+   // A semaphore left behind by a run that was not closed properly would block
+   // every following start. If the application is not running anymore, the
+   // semaphore is stale: remove it and try again.
+   if ( (SEM_FAILED == s_pSemaphoreStarted) || (NULL == s_pSemaphoreStarted) )
+   {
+      if ( (! hw_process_exists("ruby_controller")) && (! hw_process_exists("ruby_central")) )
+      {
+         printf("Ruby: Found a stale start semaphore, removing it.\n");
+         fflush(stdout);
+         log_line("Found a stale start semaphore, removing it.");
+         sem_unlink("/RUBY_STARTED_SEMAPHORE");
+         s_pSemaphoreStarted = sem_open("/RUBY_STARTED_SEMAPHORE", O_CREAT | O_EXCL, S_IWUSR | S_IRUSR, 0);
+      }
+   }
+   #endif
    if ( ((SEM_FAILED == s_pSemaphoreStarted) || (NULL == s_pSemaphoreStarted)) && (!g_bDebug) )
    {
       printf("\nRuby (v %d.%d b-%d) is starting...\n", SYSTEM_SW_VERSION_MAJOR, SYSTEM_SW_VERSION_MINOR, SYSTEM_SW_BUILD_NUMBER);
@@ -831,7 +911,7 @@ int _step_find_console()
       sleep(8);
       return 0;
    }
-   sprintf(szComm, "echo 'Ruby processes are starting...' >> /tmp/ruby_boot.log");
+   sprintf(szComm, "echo 'Ruby processes are starting...' >> /tmp/ruby_boot.log 2>/dev/null");
    hw_execute_bash_command_silent(szComm, NULL);
 
    printf("\nRuby: Is starting...\n");
@@ -863,8 +943,12 @@ int _step_find_console()
    hw_execute_bash_command("chgrp -hR root *", NULL);
    #endif
 
+   #if !defined(HW_PLATFORM_LINUX_GENERIC)
+   // On the desktop build the configuration is in the configuration folder of
+   // the user: the permissions of the files of the user are not changed.
    sprintf(szComm, "chmod 777 %s* 2>/dev/null", FOLDER_CONFIG);
    hw_execute_bash_command(szComm, NULL);
+   #endif
 
    sprintf(szComm, "mkdir -p %s", FOLDER_CALIBRATION_FILES);
    hw_execute_bash_command(szComm, NULL);
@@ -956,8 +1040,18 @@ int _step_check_file_system()
       hw_execute_bash_command_silent(szComm, NULL);
       if ( 0 < strlen(FOLDER_RUBY_FIFO_TEMP) )
       {
-         sprintf(szComm, "rm -rf %s* 2>/dev/null", FOLDER_RUBY_FIFO_TEMP);
-         hw_execute_bash_command_silent(szComm, NULL);
+         // Only the stale named pipes are removed here, and each one of them
+         // is named explicitly. The whole folder must not be emptied: on the
+         // desktop build the configuration of the application lives in a
+         // subfolder of it and it would be lost on every start.
+         const char* pFifoNames[] = { RUBY_FIFO_NAMES };
+         for( int i=0; i<(int)(sizeof(pFifoNames)/sizeof(pFifoNames[0])); i++ )
+         {
+            if ( NULL == pFifoNames[i] )
+               continue;
+            sprintf(szComm, "rm -f %s 2>/dev/null", pFifoNames[i]);
+            hw_execute_bash_command_silent(szComm, NULL);
+         }
       }
 
       sprintf(szComm, "mkdir -p %s", FOLDER_RUBY_TEMP);
@@ -991,13 +1085,21 @@ int _step_check_file_system()
 
       sprintf(szComm, "mkdir -p %s", FOLDER_CONFIG);
       hw_execute_bash_command_silent(szComm, NULL);
+      #if !defined(HW_PLATFORM_LINUX_GENERIC)
+      // On the desktop build the configuration is in the configuration
+      // folder of the user: the permissions of the files of the user are
+      // not changed.
       sprintf(szComm, "chmod 777 %s* 2>/dev/null", FOLDER_CONFIG);
       hw_execute_bash_command(szComm, NULL);
+      #endif
 
       sprintf(szComm, "mkdir -p %s", FOLDER_CONFIG_MODELS);
       hw_execute_bash_command(szComm, NULL);
+      #if !defined(HW_PLATFORM_LINUX_GENERIC)
       sprintf(szComm, "chmod 777 %s* 2>/dev/null", FOLDER_CONFIG_MODELS);
       hw_execute_bash_command(szComm, NULL);
+      #endif
+
 
       sprintf(szComm, "mkdir -p %s", FOLDER_MEDIA);
       hw_execute_bash_command(szComm, NULL);
@@ -1045,7 +1147,11 @@ int _step_check_file_system()
       #if defined(HW_PLATFORM_RASPBERRY) || defined(HW_PLATFORM_RADXA)
       sprintf(szComm, "chmod 777 %sres/* 2>/dev/null", FOLDER_BINARIES);
       hw_execute_bash_command_silent(szComm, NULL);
+      #endif
 
+      // The folders of the plugins are needed on every platform: the OSD and
+      // the core plugins are searched for at startup and the search fails if
+      // the folders are not there.
       sprintf(szComm, "mkdir -p %s", FOLDER_OSD_PLUGINS);
       hw_execute_bash_command_silent(szComm, NULL);
       sprintf(szComm, "chmod 777 %s", FOLDER_OSD_PLUGINS);
@@ -1055,7 +1161,6 @@ int _step_check_file_system()
       hw_execute_bash_command_silent(szComm, NULL);
       sprintf(szComm, "chmod 777 %s", FOLDER_CORE_PLUGINS);
       hw_execute_bash_command_silent(szComm, NULL);
-      #endif
 
       strcpy(szFile, FOLDER_LOGS);
       strcat(szFile, LOG_FILE_START);
@@ -1412,6 +1517,18 @@ void _step_load_init_radios()
          removeNewLines(szOutput);
          if ( NULL != strstr(szOutput, "wlan") )
          {
+            // The interface that carries the network connection of the machine
+            // is never toggled: bringing it down would break the connection
+            // of the machine, and the detection does not need it.
+            char szNetInterface[64];
+            sprintf(szBuff, "wlan%d", i);
+            if ( hardware_radio_get_network_connection_interface(szNetInterface, sizeof(szNetInterface)) &&
+                 (0 == strcmp(szNetInterface, szBuff)) )
+            {
+               log_line("Skipping the wifi detection on %s: it carries the network connection of this machine.", szBuff);
+               continue;
+            }
+
             sprintf(szComm, "ip link set dev wlan%d down", i );
             hw_execute_bash_command(szComm, NULL);
             hardware_sleep_ms(2*DEFAULT_DELAY_WIFI_CHANGE);
@@ -1505,6 +1622,13 @@ int main(int argc, char *argv[])
    if ( _step_process_cmd_line(argc, argv) )
       return 0;
 
+   // The settings of an old desktop installation are moved to the
+   // configuration folder of the user. It is done before anything else reads
+   // the configuration, so that the application does not think that it is
+   // installed for the first time. The files that are already in the new
+   // place are never overwritten and the old files are not deleted.
+   config_migrate_legacy_desktop_config();
+
    signal(SIGPIPE, SIG_IGN);
    signal(SIGINT, handle_sigint);
    signal(SIGTERM, handle_sigint);
@@ -1518,6 +1642,11 @@ int main(int argc, char *argv[])
    _increase_fast_reboot_counter();
    if ( _get_fast_reboot_counter() > 10 )
       _reset_fast_reboot_counter();
+
+   // ruby_start configures the radio interfaces with helper programs (iw):
+   // it must raise the file capabilities as ambient BEFORE doing so, so that
+   // the helper processes inherit them (see STATUS.md §2.14.2 / §2.14.7).
+   hardware_raise_ambient_capabilities();
 
    _log_oipc_boot_rotate();
    
@@ -1634,7 +1763,6 @@ int main(int argc, char *argv[])
       if ( NULL == fd )
       {
          log_softerror_and_alarm("Failed to open boot count config file for write [%s]", szFile);
-         fclose(fd);
          fd = NULL;
          printf("Ruby: Can't access config folder (%s)\n", FOLDER_CONFIG);
       }
@@ -1785,8 +1913,7 @@ int main(int argc, char *argv[])
          printf("Ruby: No supported radio interfaces found. Total radio interfaces found: %d\n", hardware_get_radio_interfaces_count());
          fflush(stdout);
 
-         if ( NULL != s_pSemaphoreStarted )
-            sem_close(s_pSemaphoreStarted);
+         _release_start_semaphore();
          log_line("");
          log_line("------------------------------");
          log_line("Ruby Start Finished.");
@@ -1910,6 +2037,13 @@ int main(int argc, char *argv[])
       #endif
       hw_execute_bash_command("sync", NULL);
 
+      #if defined(HW_PLATFORM_LINUX_GENERIC)
+      // On a generic Linux desktop the machine is not rebooted after the first
+      // boot initialization: the start continues with the normal startup.
+      printf("Ruby: Continuing the start...\n");
+      log_line("Ruby: Continuing the start after the first boot initialization.");
+      fflush(stdout);
+      #else
       hardware_sleep_ms(500);
       if ( ! g_bDebug )
       {
@@ -1917,6 +2051,7 @@ int main(int argc, char *argv[])
          hardware_reboot();
       }
       return 0;
+      #endif
    }
  
    _log_oipc_boot_step("Check for hw changes...");
@@ -2141,7 +2276,22 @@ int main(int argc, char *argv[])
       #ifdef HW_PLATFORM_RADXA
       hw_execute_ruby_process(NULL, "ruby_alive", NULL, NULL);
       #endif
-   
+
+
+      hw_execute_ruby_process(NULL, "ruby_controller", NULL, NULL);
+
+      #elif defined(HW_PLATFORM_LINUX_GENERIC)
+      // On a generic Linux desktop the controller process is started as well.
+      // It is the process that starts and watches the user interface
+      // (ruby_central). The SiK radios configuration is done only on the
+      // embedded platforms, the desktop radios are configured by the user
+      // from the radio profiles menu.
+      u32 uControllerId = controller_utils_getControllerId();
+      log_line("Controller UID: %u", uControllerId);
+
+      printf("Ruby: Starting controller...\n");
+      log_line("Starting controller...");
+      fflush(stdout);
 
       hw_execute_ruby_process(NULL, "ruby_controller", NULL, NULL);
 
@@ -2164,8 +2314,7 @@ int main(int argc, char *argv[])
 
    if ( s_isVehicle )
    {
-      if ( NULL != s_pSemaphoreStarted )
-         sem_close(s_pSemaphoreStarted);
+      _release_start_semaphore();
       log_line("");
       log_line("------------------------------");
       log_line("Ruby Start Finished.");
@@ -2232,12 +2381,27 @@ int main(int argc, char *argv[])
    }
    else // Controller
    {
+      // The router/station process is started by the central, when a search
+      // or a connection starts, and not by the start process. Its absence
+      // before that moment is not an error, it is the expected situation.
+      // The start process alarms only if the station was running and then
+      // stopped.
+      bool bStationExpected = 1;
+      #if defined(HW_PLATFORM_LINUX_GENERIC)
+      bStationExpected = 0;
+      if ( hardware_radio_has_usable_radios() )
+         log_line("A usable radio was found. The router/station process is started by the ground station when a search or a connection starts.");
+      else
+         log_line("No usable radio found, the router/station process is not expected to be running.");
+      #endif
+      bool bStationWasRunning = 0;
+
       int iRetryCounter = 10;
       while ( iRetryCounter > 0 )
       {
          hardware_sleep_ms(2000);
          iRetryCounter--;
-         bool bAllOk = false;
+         bool bAllOk = true;
          if ( hw_process_exists("ruby_central") )
             log_line("ruby_central is started");
          else
@@ -2253,8 +2417,11 @@ int main(int argc, char *argv[])
             log_error_and_alarm("ruby_controller is not running");
          }
          if ( hw_process_exists("ruby_rt_station") )
+         {
             log_line("ruby_rt_station is started");
-         else
+            bStationWasRunning = 1;
+         }
+         else if ( bStationExpected || bStationWasRunning )
          {
             bAllOk = false;
             log_error_and_alarm("ruby_rt_station is not running");
@@ -2289,8 +2456,7 @@ int main(int argc, char *argv[])
    #endif
 
 
-   if ( NULL != s_pSemaphoreStarted )
-      sem_close(s_pSemaphoreStarted);
+   _release_start_semaphore();
    log_line("");
    log_line("------------------------------");
    log_line("Ruby Start Finished.");

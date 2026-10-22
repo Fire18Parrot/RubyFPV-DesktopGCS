@@ -12,6 +12,10 @@ class MenuItemRange: public MenuItem
      void setPrefix(const char* szPrefix);
      void setCurrentValue(float val);
      float getCurrentValue();
+     // The limits of the range. They are used by the tests, to check that
+     // the value that the user can enter covers the needed frequencies.
+     float getMinValue();
+     float getMaxValue();
 
      virtual void onKeyUp(bool bIgnoreReversion);
      virtual void onKeyDown(bool bIgnoreReversion);

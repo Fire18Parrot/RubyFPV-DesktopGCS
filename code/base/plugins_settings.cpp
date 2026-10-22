@@ -99,8 +99,11 @@ int load_PluginsSettings()
    FILE* fd = fopen(szFile, "r");
    if ( NULL == fd )
    {
+      // The file is created with the default settings, so that it is found at
+      // the next start and the plugins are not reset every time.
       reset_PluginsSettings();
-      log_softerror_and_alarm("Failed to load plugins settings from file: %s (missing file)", szFile);
+      log_line("Plugins settings file was not found, using the default settings.");
+      save_PluginsSettings();
       return 0;
    }
 

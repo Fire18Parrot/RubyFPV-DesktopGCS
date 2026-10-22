@@ -51,6 +51,7 @@
 #include "hardware_serial.h"
 #include "hardware_radio_sik.h"
 #include "hardware_procs.h"
+#include "radio_capabilities.h"
 #include "../common/string_utils.h"
 
 #define MAX_USB_DEVICES_INFO 24
@@ -277,6 +278,8 @@ int hardware_load_radio_info_into_buffers(int* piOutputTotalCount, int* piOutput
          pRadioInfoArray[i].runtimeInterfaceInfoRx.nPort = 0;
          reset_runtime_radio_rx_info(&pRadioInfoArray[i].runtimeInterfaceInfoRx.radioHwRxInfo);
          pRadioInfoArray[i].runtimeInterfaceInfoTx.ppcap = NULL;
+         pRadioInfoArray[i].runtimeInterfaceInfoTx.pdump = NULL;
+         pRadioInfoArray[i].runtimeInterfaceInfoTx.bTxToFile = 0;
          pRadioInfoArray[i].runtimeInterfaceInfoTx.selectable_fd = -1;
          reset_runtime_radio_rx_info(&pRadioInfoArray[i].runtimeInterfaceInfoTx.radioHwRxInfo);
 
@@ -807,6 +810,91 @@ int hardware_find_usb_radio_interfaces_info()
    return s_iFoundUSBKnownRadioInterfaces;
 }
 
+// Finds the index of the phy of a wireless interface.
+//
+// The phy of an interface is read from sysfs, because the output of "iw dev"
+// cannot be parsed reliably. A phy that has more than one interface (a
+// managed one and a monitor one, for instance) does not always list the
+// managed one first, so the line that precedes the name of the interface in
+// the output is not always the "phy#N" header but an unrelated line ("type",
+// "txpower", ...). When that parse failed, the phy index was built from the
+// last character of that unrelated line (a number like 53 or 66), the band
+// detection was then run on a phy that does not exist, the radio was recorded
+// with no supported band at all and it became unusable for the video link.
+//
+// Returns 1 and the phy index if the phy was found, 0 if it was not.
+int hardware_get_interface_phy_index(const char* szInterface, int* pPhyIndex)
+{
+   if ( (NULL == szInterface) || (NULL == pPhyIndex) )
+      return 0;
+
+   *pPhyIndex = -1;
+
+   char szComm[256];
+   char szBuff[1024];
+
+   // The name of the phy device of the interface: "phy2" for example.
+   snprintf(szComm, sizeof(szComm)/sizeof(szComm[0]), "cat /sys/class/net/%s/phy80211/name 2>/dev/null", szInterface);
+   szBuff[0] = 0;
+   if ( 1 == hw_execute_bash_command_raw(szComm, szBuff) )
+   {
+      removeTrailingNewLines(szBuff);
+      removeLeadingWhiteSpace(szBuff);
+      int iLen = strlen(szBuff);
+      if ( (iLen > 3) && (0 == strncmp(szBuff, "phy", 3)) && isdigit(szBuff[3]) )
+      {
+         *pPhyIndex = atoi(&szBuff[3]);
+         return 1;
+      }
+   }
+
+   // The fallback: the "iw dev" output, parsed properly. The phy of an
+   // interface is the last "phy#N" header that appears before its name.
+   szBuff[0] = 0;
+   if ( 1 != hw_execute_bash_command_raw("iw dev 2>/dev/null", szBuff) )
+      return 0;
+
+   int iPhyIndex = -1;
+   char* pLine = szBuff;
+   while ( NULL != pLine )
+   {
+      char* pNextLine = strchr(pLine, '\n');
+      if ( NULL != pNextLine )
+         *pNextLine = 0;
+
+      char* pText = pLine;
+      while ( (' ' == *pText) || ('\t' == *pText) )
+         pText++;
+
+      if ( 0 == strncmp(pText, "phy#", 4) )
+      {
+         iPhyIndex = atoi(&pText[4]);
+      }
+      else if ( 0 == strncmp(pText, "Interface ", 10) )
+      {
+         char* pName = pText + 10;
+         while ( (' ' == *pName) || ('\t' == *pName) )
+            pName++;
+         char* pNameEnd = pName + strlen(pName);
+         while ( (pNameEnd > pName) && ((' ' == pNameEnd[-1]) || ('\t' == pNameEnd[-1])) )
+            pNameEnd--;
+         *pNameEnd = 0;
+         if ( 0 == strcmp(pName, szInterface) )
+         {
+            *pPhyIndex = iPhyIndex;
+            return (iPhyIndex >= 0);
+         }
+      }
+
+      if ( NULL == pNextLine )
+         break;
+      pLine = pNextLine + 1;
+   }
+
+   return 0;
+}
+
+
 int _hardware_enumerate_wifi_radios()
 {
    #ifdef HW_PLATFORM_OPENIPC_CAMERA
@@ -887,6 +975,8 @@ int _hardware_enumerate_wifi_radios()
       sRadioInfo[s_iHwRadiosCount].runtimeInterfaceInfoRx.nPort = 0;
       reset_runtime_radio_rx_info(&sRadioInfo[s_iHwRadiosCount].runtimeInterfaceInfoTx.radioHwRxInfo);
       sRadioInfo[s_iHwRadiosCount].runtimeInterfaceInfoTx.ppcap = NULL;
+      sRadioInfo[s_iHwRadiosCount].runtimeInterfaceInfoTx.pdump = NULL;
+      sRadioInfo[s_iHwRadiosCount].runtimeInterfaceInfoTx.bTxToFile = 0;
       sRadioInfo[s_iHwRadiosCount].runtimeInterfaceInfoTx.selectable_fd = -1;
 
       s_iHwRadiosCount++;
@@ -1028,7 +1118,13 @@ int _hardware_enumerate_wifi_radios()
       strcpy(sRadioInfo[i].szDriver, &(szDriver[iCopyPos+1]));
 
       if ( ! sRadioInfo[i].isSupported )
-         log_softerror_and_alarm("Found unsupported radio (%s), driver %s, skipping.", sRadioInfo[i].szName, szDriver);
+      {
+         // A radio that RubyFPV does not know how to drive is not an error.
+         // On a desktop there are usually other wireless adapters (the one
+         // that carries the network connection, for instance) that are found
+         // here and are simply left alone.
+         log_line("Found unsupported radio (%s), driver %s, skipping.", sRadioInfo[i].szName, szDriver);
+      }
       else
          log_line("[HW-R] Found supported radio type: %s, driver: %s, driver string short: %s, driver string: [%s]", str_get_radio_type_description(sRadioInfo[i].iRadioType), str_get_radio_driver_description(sRadioInfo[i].iRadioDriver), sRadioInfo[i].szDriver, pszDriver);
       sRadioInfo[i].iCardModel = 0;
@@ -1072,54 +1168,84 @@ int _hardware_enumerate_wifi_radios()
       }
 
       // Find physical interface number, in form phy#0
-
-      sprintf(szComm, "iw dev | grep -B 1 %s", sRadioInfo[i].szName );
-      if ( 1 != hw_execute_bash_command_raw(szComm, szBuff) )
       {
-         sRadioInfo[i].phy_index = i;
-         log_softerror_and_alarm("Failed to find physical interface index for %s", sRadioInfo[i].szName);
-      }
-      else if ( 1 != sscanf(szBuff, "%s", szComm) )
-      {
-         sRadioInfo[i].phy_index = i;
-         log_softerror_and_alarm("Failed to find physical interface index for %s", sRadioInfo[i].szName);
-      }
-      else
-      {
-         int iPhyStrLen = strlen(szComm);
-         log_line("phy string: [%s], length: %d", szComm, iPhyStrLen);
-         sRadioInfo[i].phy_index = szComm[iPhyStrLen-1] - '0';
-         if ( (iPhyStrLen > 2) && isdigit(szComm[iPhyStrLen-2]) )
+         int iPhyIndex = -1;
+         if ( hardware_get_interface_phy_index(sRadioInfo[i].szName, &iPhyIndex) && (iPhyIndex >= 0) )
          {
-            sRadioInfo[i].phy_index = 10 * (szComm[iPhyStrLen-2] - '0') + sRadioInfo[i].phy_index;
+            sRadioInfo[i].phy_index = iPhyIndex;
+            log_line("phy of %s: phy#%d", sRadioInfo[i].szName, iPhyIndex);
+         }
+         else
+         {
+            sRadioInfo[i].phy_index = -1;
+            log_softerror_and_alarm("Failed to find physical interface index for %s", sRadioInfo[i].szName);
          }
       }
 
-      // Check supported bands
-
+      // Check supported bands.
+      // The bands are detected from the actual channel list reported by the
+      // wireless stack, not from a hardcoded frequency. A frequency that is
+      // not in the channel list of a band does not make the band supported.
       sRadioInfo[i].supportedBands = 0;
-      sprintf(szComm, "iw phy%d info | grep 2377", sRadioInfo[i].phy_index);
-      hw_execute_bash_command_raw(szComm, szBuff);
-      if ( 5 < strlen(szBuff) )
-        sRadioInfo[i].supportedBands |= RADIO_HW_SUPPORTED_BAND_23;
+      if ( sRadioInfo[i].phy_index < 0 )
+      {
+         // Without the phy, the channel list cannot be read, so the bands
+         // cannot be detected.
+         log_softerror_and_alarm("The bands of %s could not be detected: the phy of the interface is unknown.", sRadioInfo[i].szName);
+      }
+      else
+      {
+         char szPhyInfo[RADIO_CAP_IW_OUTPUT_SIZE];
+         szPhyInfo[0] = 0;
+         sprintf(szComm, "iw phy%d info 2>&1", sRadioInfo[i].phy_index);
+         hw_execute_bash_command_raw(szComm, szPhyInfo);
 
-      sprintf(szComm, "iw phy%d info | grep 2427", sRadioInfo[i].phy_index);
-      hw_execute_bash_command_raw(szComm, szBuff);
-      if ( 5 < strlen(szBuff) )
-        sRadioInfo[i].supportedBands |= RADIO_HW_SUPPORTED_BAND_24;
+         radio_cap_interface_t Cap;
+         memset(&Cap, 0, sizeof(radio_cap_interface_t));
+         if ( radio_cap_parse_iw_phy_info(szPhyInfo, &Cap) > 0 )
+         {
+            // The band index of the capability model is already the value of
+            // the RADIO_HW_SUPPORTED_BAND_* constant, it is a bit mask value
+            // and it is not shifted again here.
+            sRadioInfo[i].supportedBands = radio_cap_interface_get_supported_bands_mask(&Cap);
+         }
+         else
+         {
+            // The capability model could not be used, fall back to the
+            // frequency list of the phy
+            sprintf(szComm, "iw phy%d info | grep 2377", sRadioInfo[i].phy_index);
+            hw_execute_bash_command_raw(szComm, szBuff);
+            if ( 5 < strlen(szBuff) )
+               sRadioInfo[i].supportedBands |= RADIO_HW_SUPPORTED_BAND_23;
 
-      sprintf(szComm, "iw phy%d info | grep 2512", sRadioInfo[i].phy_index);
-      hw_execute_bash_command_raw(szComm, szBuff);
-      if ( 5 < strlen(szBuff) )
-        sRadioInfo[i].supportedBands |= RADIO_HW_SUPPORTED_BAND_25;
+            sprintf(szComm, "iw phy%d info | grep 2427", sRadioInfo[i].phy_index);
+            hw_execute_bash_command_raw(szComm, szBuff);
+            if ( 5 < strlen(szBuff) )
+               sRadioInfo[i].supportedBands |= RADIO_HW_SUPPORTED_BAND_24;
 
-      sprintf(szComm, "iw phy%d info | grep 5745", sRadioInfo[i].phy_index);
-      hw_execute_bash_command_raw(szComm, szBuff);
-      if ( 5 < strlen(szBuff) )
-        sRadioInfo[i].supportedBands |= RADIO_HW_SUPPORTED_BAND_58;
+            sprintf(szComm, "iw phy%d info | grep 2512", sRadioInfo[i].phy_index);
+            hw_execute_bash_command_raw(szComm, szBuff);
+            if ( 5 < strlen(szBuff) )
+               sRadioInfo[i].supportedBands |= RADIO_HW_SUPPORTED_BAND_25;
+
+            sprintf(szComm, "iw phy%d info | grep 5745", sRadioInfo[i].phy_index);
+            hw_execute_bash_command_raw(szComm, szBuff);
+            if ( 5 < strlen(szBuff) )
+               sRadioInfo[i].supportedBands |= RADIO_HW_SUPPORTED_BAND_58;
+         }
+      }
 
       if ( sRadioInfo[i].iRadioDriver == RADIO_HW_DRIVER_REALTEK_8812EU )
          sRadioInfo[i].supportedBands &= ~RADIO_HW_SUPPORTED_BAND_24;
+
+      if ( 0 == sRadioInfo[i].supportedBands )
+      {
+         // A radio with no supported band cannot be tuned at all: the
+         // application would refuse every frequency for it. This has to be
+         // reported, it is not a normal condition.
+         log_softerror_and_alarm("The supported bands of %s could not be read (phy %d): the radio will be unusable until this is fixed.",
+            sRadioInfo[i].szName, sRadioInfo[i].phy_index);
+      }
 
       char szBands[128];
       str_get_supported_bands_string(sRadioInfo[i].supportedBands, szBands);
@@ -1258,9 +1384,9 @@ int hardware_load_driver_rtl8812au()
    snprintf(szFile, sizeof(szFile)/sizeof(szFile[0]), "/lib/modules/%s/extra/88XXau.ko", szPlatform);
    if ( access(szFile, R_OK) != -1 )
    {
-      hw_execute_bash_command_raw("insmod /lib/modules/$(uname -r)/extra/88XXau.ko rtw_tx_pwr_idx_override=1 2>&1", NULL);
+      hw_execute_bash_command_raw("insmod /lib/modules/$(uname -r)/extra/88XXau.ko rtw_tx_pwr_idx_override=1 rtw_monitor_disable_1m=1 2>&1", NULL);
       hardware_sleep_ms(50);
-      hw_execute_bash_command_raw("modprobe 88XXau rtw_tx_pwr_idx_override=1 2>&1", NULL);
+      hw_execute_bash_command_raw("modprobe 88XXau rtw_tx_pwr_idx_override=1 rtw_monitor_disable_1m=1 2>&1", NULL);
    }
    else
    {
@@ -1274,7 +1400,12 @@ int hardware_load_driver_rtl8812au()
    char szOutput[256];
    
    hw_execute_bash_command("sudo modprobe cfg80211", NULL);
-   hw_execute_bash_command("sudo modprobe 88XXau rtw_tx_pwr_idx_override=1 2>&1", szOutput);
+   // rtw_monitor_disable_1m=1 is required by the 5.8 GHz band: with the
+   // default value the driver forces the injected frames to 1 Mbps, and
+   // 1 Mbps does not exist on the 5 GHz channels, so the frames would never
+   // reach the air. The parameter is ignored by the drivers that do not
+   // have it.
+   hw_execute_bash_command("sudo modprobe 88XXau rtw_tx_pwr_idx_override=1 rtw_monitor_disable_1m=1 2>&1", szOutput);
    log_line("Modprobe result: [%s]", szOutput);
    if ( strlen(szOutput) > 10 )
    {
@@ -1338,6 +1469,21 @@ int hardware_radio_load_radio_modules(int iEchoToConsole)
 {
    if ( ! s_iEnumeratedUSBRadioInterfaces )
       hardware_find_usb_radio_interfaces_info();
+
+   #if defined(HW_PLATFORM_LINUX_GENERIC)
+   // On a generic Linux desktop the wireless drivers are provided, installed
+   // and updated by the operating system. No radio module is loaded from here:
+   // it would need root privileges and it would change the configuration of
+   // the system, including the wireless interfaces that are not used by this
+   // application.
+   log_line("[HW-R] The wireless drivers are provided by the operating system. Not loading any radio module.");
+   if ( iEchoToConsole )
+   {
+      printf("Ruby: The wireless drivers are provided by the operating system. Not loading any radio module.\n");
+      fflush(stdout);
+   }
+   return 0;
+   #endif
 
    if ( 0 == s_iFoundUSBRadioInterfaces )
    {
@@ -1521,7 +1667,7 @@ int _hardware_try_install_rtl8812au(char* szSrcDriver)
    snprintf(szComm, sizeof(szComm)/sizeof(szComm[0]), "cp -rf %s /lib/modules/%s/kernel/drivers/net/wireless/88XXau.ko", szDriverFullPath, szPlatform);
    hw_execute_bash_command(szComm, NULL);
 
-   snprintf(szComm, sizeof(szComm)/sizeof(szComm[0]), "insmod /lib/modules/%s/kernel/drivers/net/wireless/88XXau.ko rtw_tx_pwr_idx_override=1 2>&1", szPlatform);
+   snprintf(szComm, sizeof(szComm)/sizeof(szComm[0]), "insmod /lib/modules/%s/kernel/drivers/net/wireless/88XXau.ko rtw_tx_pwr_idx_override=1 rtw_monitor_disable_1m=1 2>&1", szPlatform);
    hw_execute_bash_command_raw(szComm, szOutput);
    log_line("[HW-R] Insert mod result: [%s]", szOutput);
    if ( strlen(szOutput) > 10 )
@@ -1533,7 +1679,7 @@ int _hardware_try_install_rtl8812au(char* szSrcDriver)
    if ( -1 == iRes )
       log_softerror_and_alarm("Updating drivers database after driver install took too long. Abandoning operation.");
    hardware_sleep_ms(50);
-   hw_execute_bash_command_raw("modprobe 88XXau rtw_tx_pwr_idx_override=1 2>&1", szOutput);
+   hw_execute_bash_command_raw("modprobe 88XXau rtw_tx_pwr_idx_override=1 rtw_monitor_disable_1m=1 2>&1", szOutput);
    log_line("[HW-R] Modprobe result: [%s]", szOutput);
    if ( strlen(szOutput) > 10 )
    {
@@ -1931,7 +2077,7 @@ int _configure_radio_interface_realtek(int iInterfaceIndex, radio_hw_info_t* pRa
    hw_execute_bash_command(szComm, NULL);
    hardware_sleep_ms(uDelayMS);
 
-   sprintf(szComm, "iwconfig %s mode monitor", pRadioHWInfo->szName );
+   sprintf(szComm, "iw dev %s set type monitor", pRadioHWInfo->szName );
    hw_execute_bash_command(szComm, NULL);
    hardware_sleep_ms(uDelayMS);
 
@@ -1968,6 +2114,72 @@ int _configure_radio_interface_realtek(int iInterfaceIndex, radio_hw_info_t* pRa
    return 1;
 }
 
+// The name of the interface that carries the network connection of the
+// machine, read from the default route.
+//
+// The interface is found from the routing table and not from a list of names:
+// the names of the interfaces are not stable (the kernel renames them when an
+// adapter is re-plugged), while the connection is the thing that has to be
+// protected. The output of the command is a line like
+// "default via 192.168.1.1 dev wlan0 proto dhcp metric 600".
+int hardware_radio_get_network_connection_interface(char* szName, int iNameSize)
+{
+   if ( (NULL == szName) || (iNameSize < 2) )
+      return 0;
+
+   szName[0] = 0;
+
+   char szOutput[1024];
+   szOutput[0] = 0;
+
+   if ( 1 != hw_execute_bash_command_raw("ip -o route show default 2>/dev/null", szOutput) )
+      return 0;
+
+   char* szDev = strstr(szOutput, " dev ");
+   if ( NULL == szDev )
+      return 0;
+
+   szDev += 5;
+
+   int i = 0;
+   while ( (0 != szDev[i]) && (' ' != szDev[i]) && ('\n' != szDev[i]) && ('\r' != szDev[i]) && (i < iNameSize-1) )
+   {
+      szName[i] = szDev[i];
+      i++;
+   }
+   szName[i] = 0;
+
+   return (i > 0);
+}
+
+// Returns 1 when the radio interface is the one that carries the network
+// connection of the machine.
+int hardware_radio_is_network_connection_interface(int iInterfaceIndex)
+{
+   radio_hw_info_t* pRadioHWInfo = hardware_get_radio_info(iInterfaceIndex);
+   if ( NULL == pRadioHWInfo )
+      return 0;
+
+   char szNet[64];
+   if ( ! hardware_radio_get_network_connection_interface(szNet, sizeof(szNet)) )
+      return 0;
+
+   return ( 0 == strcmp(szNet, pRadioHWInfo->szName) );
+}
+
+// Returns 1 when the radio interface must never be reconfigured.
+//
+// The ground station is allowed to change the settings of its radios: it puts
+// them in monitor mode, it tunes them and it sets their power. Those
+// operations need the CAP_NET_ADMIN capability, and the capability is enough
+// to change the mode of any interface of the machine, the network one
+// included. The interface that carries the network connection is therefore
+// excluded from every configuration operation.
+int hardware_radio_is_protected_interface(int iInterfaceIndex)
+{
+   return hardware_radio_is_network_connection_interface(iInterfaceIndex);
+}
+
 int hardware_initialize_radio_interface(int iInterfaceIndex, u32 uDelayMS)
 {
    if ( (iInterfaceIndex < 0) || (iInterfaceIndex >= hardware_get_radio_interfaces_count()) )
@@ -1979,6 +2191,16 @@ int hardware_initialize_radio_interface(int iInterfaceIndex, u32 uDelayMS)
    if ( NULL == pRadioHWInfo )
    {
       log_error_and_alarm("[HW-R] Failed to get radio info for interface %d.", iInterfaceIndex+1);
+      return 0;
+   }
+
+   // The interface that carries the network connection of the machine is never
+   // reconfigured: it is not a radio of the ground station and changing its
+   // mode would break the network connection of the machine itself.
+   if ( hardware_radio_is_protected_interface(iInterfaceIndex) )
+   {
+      log_line("[HW-R] Radio interface %d (%s) carries the network connection of this machine: it is not configured.",
+         iInterfaceIndex+1, pRadioHWInfo->szName);
       return 0;
    }
 
@@ -2004,7 +2226,7 @@ int hardware_initialize_radio_interface(int iInterfaceIndex, u32 uDelayMS)
    pRadioHWInfo->lastFrequencySetFailed = 1;
    pRadioHWInfo->uFailedFrequencyKhz = DEFAULT_FREQUENCY;
 
-   sprintf(szComm, "iwconfig %s rts off", pRadioHWInfo->szName);
+   sprintf(szComm, "iw dev %s set rts off", pRadioHWInfo->szName);
    //hw_execute_process_wait(szComm);
    hw_execute_bash_command(szComm, NULL);
    log_line("[HW-R] Initialized radio interface %d: %s", iInterfaceIndex+1, pRadioHWInfo->szName);
@@ -2107,6 +2329,53 @@ int hardware_radio_has_wifi_cards()
    {
       if ( hardware_radio_type_is_wifi(sRadioInfo[i].iRadioType) )
          return 1;
+   }
+   return 0;
+}
+
+int hardware_radio_has_serial_radios()
+{
+   if ( ! s_HardwareRadiosEnumeratedOnce )
+      hardware_enumerate_radio_interfaces();
+   for( int i=0; i<s_iHwRadiosCount; i++ )
+   {
+      if ( hardware_radio_is_serial_radio(&sRadioInfo[i]) )
+         return 1;
+   }
+   return 0;
+}
+
+// Returns 1 if the ground station has a radio that it can use to reach a
+// vehicle.
+//
+// Two kinds of radio are usable:
+//   - a serial radio (SiK / ELRS): it talks over an ordinary serial device;
+//   - a supported Wi-Fi card: it is put in monitor mode and the frames of the
+//     air are captured with libpcap.
+//
+// The interface that carries the network connection of the machine is never
+// counted: it is not a radio of the ground station, and it is never
+// reconfigured.
+//
+// The privileges needed to use a Wi-Fi card (CAP_NET_ADMIN to configure it and
+// CAP_NET_RAW to capture the frames) are not checked here: the process that
+// uses the radio reports them when they are missing.
+int hardware_radio_has_usable_radios()
+{
+   if ( ! s_HardwareRadiosEnumeratedOnce )
+      hardware_enumerate_radio_interfaces();
+   for( int i=0; i<s_iHwRadiosCount; i++ )
+   {
+      if ( hardware_radio_is_serial_radio(&sRadioInfo[i]) )
+         return 1;
+
+      if ( ! sRadioInfo[i].isSupported )
+         continue;
+      if ( ! hardware_radio_type_is_wifi(sRadioInfo[i].iRadioType) )
+         continue;
+      if ( hardware_radio_is_protected_interface(i) )
+         continue;
+      return 1;
    }
    return 0;
 }

@@ -858,8 +858,17 @@ float osd_render_stats_radio_interfaces( float xPos, float yPos, const char* szT
          snprintf(szBuff, sizeof(szBuff)/sizeof(szBuff[0]), "No Radio Link");
 
       if ( ! controllerIsCardDisabled(pNICInfo->szMAC) )
-      if ( pNICInfo->lastFrequencySetFailed || 0 == pStats->radio_interfaces[i].uCurrentFrequencyKhz )
-         snprintf(szBuff, sizeof(szBuff)/sizeof(szBuff[0]), "Set Freq Failed");
+      {
+         if ( pNICInfo->lastFrequencySetFailed )
+            snprintf(szBuff, sizeof(szBuff)/sizeof(szBuff[0]), "Set Freq Failed");
+         else
+         if ( 0 == pStats->radio_interfaces[i].uCurrentFrequencyKhz )
+            // The radio interface was never configured (it could not be
+            // configured, for example because the process does not have the
+            // permission to configure it). It is not the same as a failed
+            // frequency change.
+            snprintf(szBuff, sizeof(szBuff)/sizeof(szBuff[0]), "Not Configured");
+      }
 
       strcat(szBuff, " ");
       strcat(szBuff, szDR);

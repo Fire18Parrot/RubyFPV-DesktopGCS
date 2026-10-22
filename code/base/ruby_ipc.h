@@ -22,6 +22,7 @@ extern "C" {
 
 
 int ruby_init_ipc_channels();
+void ruby_drain_all_ipc_channels();
 void ruby_clear_all_ipc_channels();
 
 int ruby_open_ipc_channel_write_endpoint(int nChannelType);

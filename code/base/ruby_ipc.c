@@ -45,14 +45,9 @@
 //#define RUBY_USE_FIFO_PIPES 1
 #define RUBY_USES_MSGQUEUES 1
 
-#define FIFO_RUBY_ROUTER_TO_CENTRAL "/tmp/ruby/fiforoutercentral"
-#define FIFO_RUBY_CENTRAL_TO_ROUTER "/tmp/ruby/fifocentralrouter"
-#define FIFO_RUBY_ROUTER_TO_COMMANDS "/tmp/ruby/fiforoutercommands"
-#define FIFO_RUBY_COMMANDS_TO_ROUTER "/tmp/ruby/fifocommandsrouter"
-#define FIFO_RUBY_ROUTER_TO_TELEMETRY "/tmp/ruby/fiforoutertelemetry"
-#define FIFO_RUBY_TELEMETRY_TO_ROUTER "/tmp/ruby/fifotelemetryrouter"
-#define FIFO_RUBY_ROUTER_TO_RC "/tmp/ruby/fiforouterrc"
-#define FIFO_RUBY_RC_TO_ROUTER "/tmp/ruby/fiforcrouter"
+// The names of the named pipes used for the inter process communication are
+// defined in config_obj_names.h, together with the names of the other pipes
+// of the application.
 
 
 //#define PROFILE_IPC 1
@@ -250,20 +245,98 @@ int ruby_init_ipc_channels()
    return 1;
 }
 
+// The list of all the channels that are used by the application.
+static int _ruby_ipc_get_all_channel_types(int* pTypes, int iMaxTypes)
+{
+   static const int s_iChannelTypes[] = {
+      IPC_CHANNEL_TYPE_ROUTER_TO_CENTRAL,
+      IPC_CHANNEL_TYPE_CENTRAL_TO_ROUTER,
+      IPC_CHANNEL_TYPE_ROUTER_TO_TELEMETRY,
+      IPC_CHANNEL_TYPE_TELEMETRY_TO_ROUTER,
+      IPC_CHANNEL_TYPE_ROUTER_TO_RC,
+      IPC_CHANNEL_TYPE_RC_TO_ROUTER,
+      IPC_CHANNEL_TYPE_ROUTER_TO_COMMANDS,
+      IPC_CHANNEL_TYPE_COMMANDS_TO_ROUTER,
+   };
+   int iCount = (int)(sizeof(s_iChannelTypes)/sizeof(s_iChannelTypes[0]));
+   if ( iCount > iMaxTypes )
+      iCount = iMaxTypes;
+   for( int i=0; i<iCount; i++ )
+      pTypes[i] = s_iChannelTypes[i];
+   return iCount;
+}
+
+// Discards the messages that are waiting in all the known channels.
+// It is used at the start of the application, to discard the messages that
+// were left by a previous run. The queues are not removed, they could be
+// used by other processes that are still running.
+void ruby_drain_all_ipc_channels()
+{
+   log_line("[IPC] Draining all IPC channels...");
+
+   #ifdef RUBY_USES_MSGQUEUES
+
+   int iTypes[16];
+   int iCount = _ruby_ipc_get_all_channel_types(iTypes, 16);
+   for( int i=0; i<iCount; i++ )
+   {
+      key_t key = generate_msgqueue_key(iTypes[i]);
+      if ( 0 == key )
+         continue;
+      int fd = msgget(key, 0);
+      if ( fd < 0 )
+         continue;
+
+      type_ipc_message_buffer msg;
+      int iDiscarded = 0;
+      while ( 0 <= msgrcv(fd, &msg, sizeof(msg.data), 0, MSG_NOERROR | IPC_NOWAIT) )
+         iDiscarded++;
+      if ( iDiscarded > 0 )
+         log_line("[IPC] Discarded %d pending messages from channel %s", iDiscarded, _ruby_ipc_get_channel_name(iTypes[i]));
+      close(fd);
+   }
+
+   #endif
+
+   log_line("[IPC] Done draining all IPC channels.");
+}
+
+// Removes all the known channels.
+// It is used when the application stops, when the other processes that were
+// using the channels are not running anymore.
 void ruby_clear_all_ipc_channels()
 {
    log_line("[IPC] Clearing all IPC channels...");
-   
+
    #ifdef RUBY_USES_MSGQUEUES
 
+   // Close the endpoints that are opened by this process.
    for( int i=0; i<s_iRubyIPCChannelsCount; i++ )
    {
-      int iRes = msgctl(s_iRubyIPCChannelsFd[i],IPC_RMID,NULL);
-      if ( iRes < 0 )
-         log_softerror_and_alarm("[IPC] Failed to remove msgque [%s], error code: %d, error: %s",
-          _ruby_ipc_get_channel_name(s_iRubyIPCChannelsType[i]), errno, strerror(errno));
+      if ( s_iRubyIPCChannelsFd[i] > 0 )
+         close(s_iRubyIPCChannelsFd[i]);
    }
    s_iRubyIPCChannelsCount = 0;
+
+   // Remove the queues of all the known channels, not only of the ones that
+   // were opened by this process: the queues that were left by a previous run
+   // of the application have to be removed too.
+   int iTypes[16];
+   int iCount = _ruby_ipc_get_all_channel_types(iTypes, 16);
+   for( int i=0; i<iCount; i++ )
+   {
+      key_t key = generate_msgqueue_key(iTypes[i]);
+      if ( 0 == key )
+         continue;
+      int fd = msgget(key, 0);
+      if ( fd < 0 )
+         continue;
+      int iRes = msgctl(fd,IPC_RMID,NULL);
+      if ( iRes < 0 )
+         log_softerror_and_alarm("[IPC] Failed to remove msgque [%s], error code: %d, error: %s",
+          _ruby_ipc_get_channel_name(iTypes[i]), errno, strerror(errno));
+      close(fd);
+   }
 
    #endif
 
@@ -281,7 +354,7 @@ int ruby_open_ipc_channel_write_endpoint(int nChannelType)
    if ( s_iRubyIPCChannelsCount >= MAX_CHANNELS )
    {
       log_error_and_alarm("[IPC] Can't open %s channel. No more IPC channels. List full.", _ruby_ipc_get_channel_name(nChannelType));
-      return 0;
+      return -1;
    }
 
    s_iRubyIPCChannelsType[s_iRubyIPCChannelsCount] = nChannelType;
@@ -293,14 +366,14 @@ int ruby_open_ipc_channel_write_endpoint(int nChannelType)
    if ( NULL == szPipeName || 0 == szPipeName[0] )
    {
       log_error_and_alarm("[IPC] Can't open IPC FIFO Pipe with invalid name (requested type: %d).", nChannelType);
-      return 0;
+      return -1;
    }
 
    s_iRubyIPCChannelsFd[s_iRubyIPCChannelsCount] = open(szPipeName, O_WRONLY | (RUBY_PIPES_EXTRA_FLAGS & (~O_NONBLOCK)));
    if ( s_iRubyIPCChannelsFd[s_iRubyIPCChannelsCount] < 0 )
    {
       log_error_and_alarm("[IPC] Failed to open IPC channel %s pipe write endpoint.", _ruby_ipc_get_channel_name(nChannelType));
-      return 0;
+      return -1;
    }
 
    if ( RUBY_PIPES_EXTRA_FLAGS & O_NONBLOCK )
@@ -320,7 +393,7 @@ int ruby_open_ipc_channel_write_endpoint(int nChannelType)
       log_softerror_and_alarm("[IPC] Failed to generate message queue key for channel %s. Error: %d, %s",
          _ruby_ipc_get_channel_name(nChannelType),
          errno, strerror(errno));
-      return 0;
+      return -1;
    }
    s_uRubyIPCChannelsKeys[s_iRubyIPCChannelsCount] = key;
    s_iRubyIPCChannelsFd[s_iRubyIPCChannelsCount] = msgget(key, IPC_CREAT | S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
@@ -371,7 +444,7 @@ int ruby_open_ipc_channel_read_endpoint(int nChannelType)
    if ( s_iRubyIPCChannelsCount >= MAX_CHANNELS )
    {
       log_error_and_alarm("[IPC] Can't open %s channel. No more IPC channels. List full.", _ruby_ipc_get_channel_name(nChannelType));
-      return 0;
+      return -1;
    }
 
    s_iRubyIPCChannelsType[s_iRubyIPCChannelsCount] = nChannelType;
@@ -383,7 +456,7 @@ int ruby_open_ipc_channel_read_endpoint(int nChannelType)
    if ( NULL == szPipeName || 0 == szPipeName[0] )
    {
       log_error_and_alarm("[IPC] Can't open IPC FIFO Pipe with invalid name (requested type: %d).", nChannelType);
-      return 0;
+      return -1;
    }
 
    s_iRubyIPCChannelsFd[s_iRubyIPCChannelsCount] = open(szPipeName, O_RDONLY | RUBY_PIPES_EXTRA_FLAGS);
@@ -391,7 +464,7 @@ int ruby_open_ipc_channel_read_endpoint(int nChannelType)
    if ( s_iRubyIPCChannelsFd[s_iRubyIPCChannelsCount] < 0 )
    {
       log_error_and_alarm("[IPC] Failed to open IPC channel %s read endpoint.", _ruby_ipc_get_channel_name(nChannelType));
-      return 0;
+      return -1;
    }
 
    log_line("[IPC] FIFO read endpoint pipe flags: %s", str_get_pipe_flags(fcntl(s_iRubyIPCChannelsFd[s_iRubyIPCChannelsCount], F_GETFL)));
@@ -408,7 +481,7 @@ int ruby_open_ipc_channel_read_endpoint(int nChannelType)
          _ruby_ipc_get_channel_name(nChannelType),
          errno, strerror(errno));
       log_line("%d %d %d", ENOENT, EACCES, ENOTDIR);
-      return 0;
+      return -1;
    }
 
    s_uRubyIPCChannelsKeys[s_iRubyIPCChannelsCount] = key;
@@ -475,7 +548,11 @@ int ruby_close_ipc_channel(int iChannelUniqueId)
    #endif
 
    #ifdef RUBY_USES_MSGQUEUES
-   msgctl(fdToClose,IPC_RMID,NULL);
+   // Only the endpoint of this process is closed. The message queue is shared
+   // with the other end of the channel: removing it here would break the peer
+   // process, that would get EIDRM on every send. The queues are removed by
+   // ruby_clear_all_ipc_channels(), when the application stops.
+   close(fdToClose);
    #endif
 
 
@@ -539,7 +616,9 @@ int ruby_ipc_channel_send_message(int iChannelUniqueId, u8* pMessage, int iLengt
       return 0;
    }
 
-   if ( iLength >= IPC_CHANNEL_MAX_MSG_SIZE-6 )
+   // The receivers of the IPC messages copy the message in buffers of
+   // MAX_PACKET_TOTAL_SIZE bytes, so a bigger message could not be received.
+   if ( (iLength > MAX_PACKET_TOTAL_SIZE) || (iLength >= IPC_CHANNEL_MAX_MSG_SIZE-6) )
    {
       log_softerror_and_alarm("[IPC] Tried to write a message too big (%d bytes) on channel %s, channel unique id %d", iLength, _ruby_ipc_get_channel_name(s_iRubyIPCChannelsType[iFoundIndex]), iChannelUniqueId );
       return 0;
@@ -794,7 +873,9 @@ u8* ruby_ipc_try_read_message(int iChannelUniqueId, u8* pTempBuffer, int* pTempB
    if ( lenReadIPCMsgQueue > 6 )
    {
       int iMsgLen = ipcMessage.data[5] + 256*(int)ipcMessage.data[6];
-      if ( iMsgLen <= 0 || iMsgLen >= IPC_CHANNEL_MAX_MSG_SIZE - 6 )
+      // The receivers copy the message in buffers of MAX_PACKET_TOTAL_SIZE
+      // bytes: a bigger message is invalid.
+      if ( (iMsgLen <= 0) || (iMsgLen > MAX_PACKET_TOTAL_SIZE) || (iMsgLen >= IPC_CHANNEL_MAX_MSG_SIZE - 6) )
          log_softerror_and_alarm("[IPC] Received invalid message on channel %s, id: %d, length: %d", _ruby_ipc_get_channel_name(iChannelType), ipcMessage.data[4], iMsgLen );
       else
       {

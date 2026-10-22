@@ -63,6 +63,8 @@
 #include "../base/hardware.h"
 #include "../base/hardware_audio.h"
 #include "../base/hardware_files.h"
+#include "../base/hardware_radio.h"
+#include "../base/sw_version_compat.h"
 #include "../base/hdmi.h"
 #include "../base/config.h"
 #include "../base/ctrl_settings.h"
@@ -375,6 +377,12 @@ void _draw_background_picture()
    }
 }
 
+// The build number of the first version of the vehicle software that speaks
+// the current video protocol, the version of the controller and the
+// comparison between the version of a vehicle and the version of the
+// controller are in "base/sw_version_compat.h" (shared with the regression
+// test "test_sw_version_compat").
+
 // returns true if it rendered a background
 bool _render_video_background()
 {
@@ -386,6 +394,7 @@ bool _render_video_background()
    bool bVehicleHasCamera = true;
    bool bDisplayingRelayedVideo = false;
    bool bCantDisplayVideo = false;
+   int iVehicleVersionClass = VEHICLE_SW_VERSION_COMPATIBLE;
 
    if ( NULL != g_pCurrentModel )
    {
@@ -428,25 +437,18 @@ bool _render_video_background()
          bVehicleHasCamera = true;
    }
 
-   if ( 0 != uVehicleIdFullVideo )
-   if ( (! bCantDisplayVideo) && (! g_bUpdateInProgress) )
-   if ( bVehicleHasCamera && link_has_received_videostream(uVehicleIdFullVideo) )
-   if ( (uVehicleSoftwareVersion >> 16) == SYSTEM_SW_BUILD_NUMBER )
-      return false;
+   iVehicleVersionClass = classify_vehicle_software_version(uVehicleSoftwareVersion);
 
    if ( 0 != uVehicleIdFullVideo )
    if ( (! bCantDisplayVideo) && (! g_bUpdateInProgress) )
    if ( bVehicleHasCamera && link_has_received_videostream(uVehicleIdFullVideo) )
-   if ( (uVehicleSoftwareVersion >> 16) >= 11503 )
-   if ( (uVehicleSoftwareVersion >> 16) <= SYSTEM_SW_BUILD_NUMBER )
+   if ( VEHICLE_SW_VERSION_COMPATIBLE == iVehicleVersionClass )
       return false;
 
    g_pRenderEngine->setGlobalAlfa(1.0);
 
    double c1[4] = {0,0,0,1};
-   if ( (uVehicleSoftwareVersion >>16) < 11503 )
-      c1[0] = 70;
-   if ( (uVehicleSoftwareVersion >>16) > SYSTEM_SW_BUILD_NUMBER )
+   if ( VEHICLE_SW_VERSION_COMPATIBLE != iVehicleVersionClass )
       c1[0] = 70;
    g_pRenderEngine->setColors(c1);
    g_pRenderEngine->drawRect(0, 0, 1,1 );
@@ -485,9 +487,9 @@ bool _render_video_background()
       }
    }
 
-   if ( ((uVehicleSoftwareVersion >> 16) < 11503) )
+   if ( VEHICLE_SW_VERSION_OLDER == iVehicleVersionClass )
       strcpy(szText, L("Vehicle OTA software update required"));
-   if ( (uVehicleSoftwareVersion >> 16) > SYSTEM_SW_BUILD_NUMBER )
+   if ( VEHICLE_SW_VERSION_NEWER == iVehicleVersionClass )
       strcpy(szText, L("Controller software update required"));
 
    if ( g_bUpdateInProgress )
@@ -498,12 +500,12 @@ bool _render_video_background()
    g_pRenderEngine->drawText((1.0-width_text)*0.5, 0.45, g_idFontOSDBig, szText);
 
    if ( !g_bSearching )
-   if ( ((uVehicleSoftwareVersion >>16) < 11503) || ((uVehicleSoftwareVersion>>16) > SYSTEM_SW_BUILD_NUMBER) )
+   if ( VEHICLE_SW_VERSION_COMPATIBLE != iVehicleVersionClass )
    {
       float fHeight = 1.5*g_pRenderEngine->textHeight(g_idFontOSDBig);
       char szWarning[256];
       strcpy(szWarning, L("Video protocols have changed. You must update your vehicle"));
-      if ( (uVehicleSoftwareVersion >>16) > SYSTEM_SW_BUILD_NUMBER )
+      if ( VEHICLE_SW_VERSION_NEWER == iVehicleVersionClass )
          strcpy(szWarning, L("Video protocols have changed. You must update your controller"));
       width_text = g_pRenderEngine->textRawWidth(g_idFontOSDBig, szWarning);
       g_pRenderEngine->drawText((1.0-width_text)*0.5, 0.45+fHeight, g_idFontOSDBig, szWarning);
@@ -589,9 +591,7 @@ void render_background_and_paddings(bool bForceBackground)
    if ( NULL != pModel )
    if ( relay_controller_must_display_remote_video(pModel) )
       uVehicleSoftwareVersion = pModel->sw_version;
-   if ( (uVehicleSoftwareVersion >> 16) < 11503 )
-      bShowBgVideo = true;
-   if ( (uVehicleSoftwareVersion >> 16) > SYSTEM_SW_BUILD_NUMBER )
+   if ( VEHICLE_SW_VERSION_COMPATIBLE != classify_vehicle_software_version(uVehicleSoftwareVersion) )
       bShowBgVideo = true;
 
    if ( bShowBgVideo )
@@ -1352,6 +1352,34 @@ void r_check_processes_filesystem()
    char szFilesMissing[1024];
    szFilesMissing[0] = 0;
    bool failed = false;
+#ifdef HW_PLATFORM_LINUX_GENERIC
+   // On the desktop build there is no local radio/video hardware, so the
+   // vehicle side processes are not started on this machine and the local
+   // video player is not needed either.
+   // Exception: if a serial radio (SiK / ELRS) is actually detected, the
+   // router/station and the telemetry receiver ARE started, so their
+   // binaries are required.
+   {
+      int iRadioCount = hardware_get_radio_interfaces_count();
+      bool bHasSerialRadio = false;
+      for( int i=0; i<iRadioCount; i++ )
+      {
+         if ( hardware_radio_index_is_serial_radio(i) )
+         {
+            bHasSerialRadio = true;
+            break;
+         }
+      }
+      if ( bHasSerialRadio )
+      {
+         char szFullPath[MAX_FILE_PATH_SIZE];
+         if( ! hw_get_ruby_process_full_path( "ruby_rt_station", szFullPath, sizeof(szFullPath) ) )
+            { failed = true; strcat(szFilesMissing, " ruby_rt_station"); }
+         if( ! hw_get_ruby_process_full_path( "ruby_rx_telemetry", szFullPath, sizeof(szFullPath) ) )
+            { failed = true; strcat(szFilesMissing, " ruby_rx_telemetry"); }
+      }
+   }
+#else
    if( access( "ruby_rt_station", R_OK ) == -1 )
       { failed = true; strcat(szFilesMissing, " ruby_rt_station"); }
    if( access( "ruby_rx_telemetry", R_OK ) == -1 )
@@ -1362,6 +1390,7 @@ void r_check_processes_filesystem()
       { failed = true; strcat(szFilesMissing, " "); strcat(szFilesMissing, VIDEO_PLAYER_SM); }
    if( access( VIDEO_PLAYER_OFFLINE, R_OK ) == -1 )
       { failed = true; strcat(szFilesMissing, " "); strcat(szFilesMissing, VIDEO_PLAYER_OFFLINE); }
+#endif
      
    log_line("Checked proccesses. Result: %s", failed?"failed":"all ok");
 
@@ -2352,6 +2381,12 @@ void ruby_processing_loop(bool bNoKeys)
    u32 uTimeStart = g_TimeNow;
 
    try_read_messages_from_router(5);
+   // Read the pending window system events (SDL2 on the desktop) before
+   // consuming the input event queue, so that a key press is handled in the
+   // same iteration in which it was received.
+   if ( NULL != g_pRenderEngine )
+      g_pRenderEngine->pollEvents();
+   keyboard_update_held_keys();
    keyboard_consume_input_events();
    u32 uSumEvent = keyboard_get_triggered_input_events();
 
@@ -2670,6 +2705,10 @@ int main(int argc, char *argv[])
 
    hardware_detectBoardAndSystemType();
 
+   // The ground station runs helper programs (iw) to configure the radio
+   // interfaces: they must inherit the privileges of this process.
+   hardware_raise_ambient_capabilities();
+
    initLocalizationData();
 
    check_licences();
@@ -2755,6 +2794,13 @@ int main(int argc, char *argv[])
    #endif
 
    g_pRenderEngine = render_init_engine();
+   if ( NULL == g_pRenderEngine )
+   {
+      // The render engine could not be started (no window, no draw context).
+      // The program cannot continue: it would crash on the first draw.
+      log_error_and_alarm("The render engine could not be initialized, exiting.");
+      return 1;
+   }
    log_line("Render Engine was initialized.");
 
    if ( g_bPlayIntro )
@@ -2821,7 +2867,10 @@ int main(int argc, char *argv[])
    hardware_serial_init_ports();
 
    clear_shared_mems();   
-   ruby_clear_all_ipc_channels();
+   // Discard the messages that were left by a previous run of the application.
+   // The queues are not removed, they could be used by processes that are
+   // still running.
+   ruby_drain_all_ipc_channels();
 
    g_pProcessStatsCentral = shared_mem_process_stats_open_write(SHARED_MEM_WATCHDOG_CENTRAL);
    if ( NULL == g_pProcessStatsCentral )
@@ -3000,8 +3049,16 @@ void ruby_reinit_hdmi_display()
    #endif
 
    g_pRenderEngine = render_init_engine();
+   if ( NULL == g_pRenderEngine )
+   {
+      // The render engine could not be started. The UI is left uninitialized
+      // and the program keeps running without drawing anything, instead of
+      // crashing on the first draw.
+      log_error_and_alarm("The render engine could not be re-initialized, the UI is not available.");
+      return;
+   }
    log_line("Render Engine was initialized.");
-   
+
    load_resources();
    osd_apply_preferences();
    menu_init();

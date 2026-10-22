@@ -102,6 +102,7 @@ void hardware_loop();
 void hardware_swap_buttons(int swap);
 
 void hardware_detectBoardAndSystemType();
+void hardware_raise_ambient_capabilities();
 void hardware_writeBoardAndSystemType();
 u32 hardware_detectBoardType();
 u32 hardware_getBoardType();

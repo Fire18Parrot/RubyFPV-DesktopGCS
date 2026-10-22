@@ -6,7 +6,10 @@ extern "C" {
 #endif 
 
 #define MAX_SERIAL_PORT_NAME 64
-#define MAX_SERIAL_PORTS 6
+// On the embedded platforms there is one or two serial ports, but a generic
+// Linux desktop can have several USB serial adapters connected at the same
+// time (a radio, a flight controller, a GPS), so there is room for more.
+#define MAX_SERIAL_PORTS 16
 
 #define SERIAL_PORT_USAGE_NONE 0
 #define SERIAL_PORT_USAGE_TELEMETRY 1
@@ -40,6 +43,10 @@ int hardware_serial_has_unsupported_ports();
 int hardware_serial_get_ports_count();
 hw_serial_port_info_t* hardware_get_serial_port_info(int iPortIndex);
 hw_serial_port_info_t* hardware_get_serial_port_info_from_serial_port_name(char* szPortName);
+
+// Adds a serial port that was found at runtime to the list of the hardware
+// serial ports. Returns the index of the port, or -1 if it could not be added.
+int hardware_serial_add_port(const char* szDeviceName, const char* szName, long lSpeed, int iUsage);
 
 int hardware_configure_serial(const char* szDevName, long baudRate);
 int hardware_open_serial_port(const char* szDevName, long baudRate);

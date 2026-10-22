@@ -321,13 +321,18 @@ int ssd1306_init(ssd1306_handle_t *handle)
     // }
     if (handle->iic_spi == SSD1306_INTERFACE_IIC)
     {
-        if (handle->iic_init(handle->iic_addr) != 0)
+#ifdef HW_PLATFORM_LINUX_GENERIC
+        // Desktop: stub I2C init - no physical OLED on desktop
+        (void)handle;
+#else
+        if (((int(*)(int))handle->iic_init)(handle->iic_addr) != 0)
         {
 
             //(void)handle->spi_cmd_data_gpio_deinit();
             //(void)handle->reset_gpio_deinit();
             return -1;
         }
+#endif
     }
     // else if (handle->iic_spi == SSD1306_INTERFACE_SPI)
     //{
@@ -367,7 +372,12 @@ int ssd1306_deinit(ssd1306_handle_t *handle)
     // handle->spi_cmd_data_gpio_deinit();
     if (handle->iic_spi == SSD1306_INTERFACE_IIC)
     {
-        return handle->iic_deinit(handle->iic_addr);
+#ifdef HW_PLATFORM_LINUX_GENERIC
+        // Desktop: stub I2C deinit - no physical OLED on desktop
+        return 0;
+#else
+        return ((int(*)(int))handle->iic_deinit)(handle->iic_addr);
+#endif
     }
     // else if (handle->iic_spi == SSD1306_INTERFACE_SPI)
     //{

@@ -52,6 +52,15 @@ void _set_radio_region()
    //hw_execute_bash_command("iw reg set DE", NULL);
    //system("iw reg set BO");
 
+   #if defined(HW_PLATFORM_LINUX_GENERIC)
+   // On a generic Linux desktop the wireless regulatory domain is a system wide
+   // setting, managed by the operating system and by the user's country. It is
+   // not changed from here: it would affect all the wireless interfaces of the
+   // machine, including the ones that are not used by this application.
+   log_line("Not changing the wireless regulatory domain (generic Linux platform, the system setting is managed by the operating system).");
+   return;
+   #endif
+
    char szOutput[256];
    hw_execute_bash_command_raw("iw reg set 00", szOutput);
 }
@@ -110,6 +119,11 @@ int init_Radios()
       return 0;
    }
 
+   // Tells if there was a wifi radio that had to be configured and if all of
+   // them could be configured.
+   bool bHaveWifiRadiosToConfigure = false;
+   bool bWifiRadiosConfigured = true;
+
    for( int i=0; i<hardware_get_radio_interfaces_count(); i++ )
    {
       radio_hw_info_t* pRadioHWInfo = hardware_get_radio_info(i);
@@ -128,6 +142,15 @@ int init_Radios()
          log_line("Configuring radio interface %d (%s): radio interface is SiK radio. Skipping it.", i+1, pRadioHWInfo->szName);
          continue;
       }
+      if ( ! pRadioHWInfo->isSupported )
+      {
+         // An unsupported radio is not an error. On a generic Linux desktop
+         // there are usually other wireless adapters (the one that carries
+         // the network connection) that RubyFPV does not know how to use.
+         // They are simply left alone.
+         log_line("Configuring radio interface %d (%s): found an unsupported radio, skipping it.", i+1, pRadioHWInfo->szName);
+         continue;
+      }
       if ( ! hardware_radio_is_wifi_radio(pRadioHWInfo) )
       {
          log_softerror_and_alarm("Radio interface %d is not a wifi radio type. Skipping it.", i+1);
@@ -135,13 +158,26 @@ int init_Radios()
       }
 
       log_line( "Configuring wifi radio interface %d: %s ...", i+1, pRadioHWInfo->szName );
-      if ( ! pRadioHWInfo->isSupported )
+
+      // Configuring a wireless interface needs the CAP_NET_ADMIN capability.
+      // If the process does not have it, the interface is left exactly as it
+      // is and it is reported as not configured. The privilege is not changed
+      // in any way to obtain it.
+      if ( ! hw_process_has_net_admin_capability() )
       {
-         log_softerror_and_alarm("Found unsupported wifi radio: %s, skipping.",pRadioHWInfo->szName);
+         log_line("Configuring wifi radio interface %d (%s): skipped, this process does not have the CAP_NET_ADMIN capability needed to configure a wireless interface. The radio interface is left unconfigured.", i+1, pRadioHWInfo->szName);
+         bHaveWifiRadiosToConfigure = 1;
+         bWifiRadiosConfigured = 0;
          continue;
       }
 
-      hardware_initialize_radio_interface(i, uDelayMS);
+      if ( ! hardware_initialize_radio_interface(i, uDelayMS) )
+      {
+         log_line("Configuring wifi radio interface %d (%s): failed to configure the radio interface.", i+1, pRadioHWInfo->szName);
+         bHaveWifiRadiosToConfigure = 1;
+         bWifiRadiosConfigured = 0;
+         continue;
+      }
 
       // Set a default minimum tx power
       if ( hardware_radio_driver_is_rtl8812au_card(pRadioHWInfo->iRadioDriver) )
@@ -173,10 +209,21 @@ int init_Radios()
 
    _set_radio_region();
 
+   if ( bHaveWifiRadiosToConfigure && ! bWifiRadiosConfigured )
+   {
+      // The radio interfaces were not configured. The marker file is not
+      // written, so that the radios are configured at the next start, if the
+      // process has the permissions to do it by then.
+      log_line("The radio interfaces were NOT configured. They are reported as not configured.");
+      hardware_save_radio_info();
+      configure_radios_succeeded = false;
+      return 0;
+   }
+
    FILE* fd = fopen(szFile, "w");
    fprintf(fd, "done");
    fclose(fd);
-   
+
    hardware_save_radio_info();
 
    log_line("Configuring radios COMPLETED.");

@@ -25,3 +25,12 @@ int keyboard_has_long_press_flag();
 u32 keyboard_get_triggered_input_events();
 void keyboard_clear_triggered_back_event();
 u32 keyboard_add_triggered_gpio_input_events();
+void keyboard_add_input_event(u32 uEvent);
+
+// Key state tracking. A key press is registered only once per physical
+// press, the auto-repeat of the keyboard is filtered out.
+bool keyboard_add_key_press(int iKey, u32 uEvent);
+void keyboard_add_key_release(int iKey);
+bool keyboard_is_key_long_pressed(u32 uMinMs);
+int keyboard_get_pressed_keys_count();
+void keyboard_update_held_keys();

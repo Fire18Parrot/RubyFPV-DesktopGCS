@@ -73,6 +73,7 @@ class MenuRadioConfig: public Menu
       bool m_bHasSwitchRadioLinkCommand[MAX_RADIO_INTERFACES];
       bool m_bHasDiagnoseRadioLinkCommand[MAX_RADIO_INTERFACES];
       bool m_bHasRotateRadioLinksOrderCommand;
+      bool m_bHasRFProfilesCommand;
       
       bool m_bComputedHeights;
 

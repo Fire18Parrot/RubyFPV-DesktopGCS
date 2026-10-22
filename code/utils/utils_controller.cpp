@@ -73,6 +73,10 @@ u32 controller_utils_getControllerId()
    uControllerId = rand();
    if ( BROADCAST_VEHICLE_ID == uControllerId )
       uControllerId = rand();
+   #if defined(HW_PLATFORM_RASPBERRY) || defined(HW_PLATFORM_RADXA) || defined(HW_PLATFORM_OPENIPC_CAMERA)
+   // The device tree holds the serial number of the board only on the
+   // embedded platforms. On a generic Linux desktop there is no device tree,
+   // so there is no serial number to read and it is not an error.
    fd = fopen("/sys/firmware/devicetree/base/serial-number", "r");
    if ( NULL != fd )
    {
@@ -90,6 +94,7 @@ u32 controller_utils_getControllerId()
    }
    else
       log_softerror_and_alarm("Failed to get hardware serial number for generating unique controller Id.");
+   #endif
 
    struct timespec t;
    clock_gettime(RUBY_HW_CLOCK_ID, &t);

@@ -18,6 +18,19 @@
 int i2c_fd = 0;
 static ssd1306_handle_t gs_handle;
 
+// Desktop stubs - no physical I2C/OLED on desktop
+#ifdef HW_PLATFORM_LINUX_GENERIC
+int ssd1306_iic_init()
+{
+    return 0; // Success (stub)
+}
+
+int ssd1306_iic_deinit()
+{
+    return 0;
+}
+#else
+
 int ssd1306_iic_init()
 {
     i2c_fd = wiringPiI2CSetup(gs_handle.iic_addr);
@@ -28,6 +41,7 @@ int ssd1306_iic_deinit()
 {
     return 0;
 }
+#endif
 
 int ssd1306_iic_write(uint8_t addr, uint8_t reg, uint8_t *buf, uint16_t len)
 {
@@ -55,6 +69,11 @@ int ssd1306_iic_write(uint8_t addr, uint8_t reg, uint8_t *buf, uint16_t len)
     {
        return wiringPiI2CWriteBlockData(i2c_fd, reg, len, buf);
     }
+#endif
+#if defined (HW_PLATFORM_LINUX_GENERIC)
+    // Desktop: stub - no physical I2C
+    (void)i2c_fd; (void)reg; (void)buf; (void)len;
+    return 0;
 #endif
 }
 

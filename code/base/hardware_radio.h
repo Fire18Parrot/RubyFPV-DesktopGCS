@@ -125,6 +125,8 @@ void reset_runtime_radio_rx_signal_info(type_runtime_radio_rx_signal_info* pRunt
 typedef struct
 {
    pcap_t *ppcap;
+   pcap_dumper_t *pdump;   // set only when the interface is opened for writing to a capture file
+   int bTxToFile;          // 1 when the TX frames are written to a capture file instead of the air
    int selectable_fd;
    int n80211HeaderLength;
    int nRadioType;
@@ -197,6 +199,7 @@ void hardware_log_radio_info(radio_hw_info_t* pRadioInfo, int iCount);
 void hardware_radio_remove_stored_config();
 
 void hardware_reset_radio_enumerated_flag();
+int hardware_get_interface_phy_index(const char* szInterface, int* pPhyIndex);
 int hardware_find_usb_radio_interfaces_info();
 int hardware_enumerate_radio_interfaces();
 int hardware_enumerate_radio_interfaces_step(int iStep);
@@ -212,6 +215,15 @@ int hardware_install_driver_rtl8733bu(int iEchoToConsole);
 void hardware_install_drivers(int iEchoToConsole);
 int hardware_initialize_radio_interface(int iInterfaceIndex, u32 uDelayMS);
 
+// The interface that carries the network connection of the machine must never
+// be reconfigured: putting it in monitor mode would break the connection. The
+// name of that interface is read from the default route, so the protection
+// follows the connection and it does not depend on the interface names, that
+// are not stable.
+int hardware_radio_get_network_connection_interface(char* szName, int iNameSize);
+int hardware_radio_is_network_connection_interface(int iInterfaceIndex);
+int hardware_radio_is_protected_interface(int iInterfaceIndex);
+
 int hardware_radio_get_driver_id_card_model(int iCardModel);
 
 int hardware_get_radio_interfaces_count();
@@ -222,6 +234,14 @@ int hardware_get_radio_index_by_name(const char* szName);
 int hardware_get_radio_index_from_mac(const char* szMAC);
 int hardware_radio_has_low_capacity_links();
 int hardware_radio_has_wifi_cards();
+// Returns 1 if the system has at least one serial radio (SiK or ELRS). These
+// radios talk over an ordinary serial device, so they do not need a Wi-Fi card
+// in monitor mode and they do not need any special privilege.
+int hardware_radio_has_serial_radios();
+// Returns 1 if the ground station has a radio that it can use to reach a
+// vehicle: a serial radio (SiK or ELRS) or a supported Wi-Fi card that is not
+// the interface that carries the network connection of the machine.
+int hardware_radio_has_usable_radios();
 int hardware_radio_has_rtl8812au_cards();
 int hardware_radio_has_rtl8812eu_cards();
 int hardware_radio_has_rtl8733bu_cards();

@@ -35,6 +35,11 @@ void hw_process_get_pids(const char* szProcName, char* szOutput);
 int hw_process_get_current_core(int iPID);
 
 void hw_stop_process(const char* szProcName);
+
+// Stops a process, giving it the time to stop by itself. The process is asked
+// to stop with the SIGTERM signal and it is killed only if it does not exit
+// in the given time.
+void hw_stop_process_graceful(const char* szProcName, u32 uGraceMs);
 int hw_kill_process(const char* szProcName, int iSignal);
 
 int hw_execute_bash_command_nonblock(const char* command, char* outBuffer);
@@ -48,7 +53,18 @@ int hw_execute_bash_command_raw_silent(const char* command, char* outBuffer);
 void hw_execute_ruby_process(const char* szPrefixes, const char* szProcess, const char* szParams, char* szOutput);
 void hw_execute_ruby_process_wait(const char* szPrefixes, const char* szProcess, const char* szParams, char* szOutput, int iWait);
 
+// Resolves the full path of a Ruby binary, using the same lookup order as
+// the process execution: the path as it is given, the binaries folder and
+// the debug folder. Returns 1 if the binary was found and the full path was
+// written to szFullPath.
+int hw_get_ruby_process_full_path(const char* szProcess, char* szFullPath, int iFullPathSize);
+
 int hw_procs_get_cpu_count();
+// Returns 1 if the process has the CAP_NET_ADMIN capability, which is needed
+// in order to configure the wireless interfaces (mode, channel, frequency,
+// power). The check only reads the capabilities of the process: it does not
+// change any privilege.
+int hw_process_has_net_admin_capability();
 int hw_get_current_thread_id();
 int hw_init_worker_thread_attrs(pthread_attr_t* pAttr, int iDesiredCore, int iStackSizeBytes, int iSchedulingClass, int iRawPriority, const char* szSource);
 void hw_log_current_thread_attributes(const char* szPrefix);
@@ -57,6 +73,11 @@ void hw_set_process_affinity(const char* szProcName, int iExceptThreadId, int iC
 void hw_set_current_thread_affinity(const char* szLogPrefix, int iCoreStart, int iCoreEnd);
 
 void hw_set_priority_current_proc(int iRawPrioriry);
+
+// Returns the nice value to be used to start a process with the given raw
+// thread priority. The value is limited to what the user of the application
+// is allowed to set.
+int hw_get_nice_value_for_raw_priority(int iRawPriority);
 void hw_get_process_priority(const char* szProcName, char* szOutput);
 
 int  hw_get_current_thread_rt_priority(const char* szLogPrefix);

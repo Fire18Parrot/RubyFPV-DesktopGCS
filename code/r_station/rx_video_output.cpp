@@ -148,6 +148,10 @@ u32 s_uTimeLastOutputDataToLocalVideoPlayer = 0;
 u32 s_uLastTimeComputedOutputBitrate = 0;
 u32 s_uOutputBitrateToLocalVideoStreamerPipe = 0;
 u32 s_uOutputBitrateToLocalVideoPlayerUDP = 0;
+// The total number of the bytes that were written to the FIFO of the local
+// video player (the desktop player). It is never reset, so it can be used to
+// check that the video really reached the player.
+unsigned long long s_uTotalBytesToLocalVideoStreamerPipe = 0;
 
 char s_szOutputVideoStreamerFilename[MAX_FILE_PATH_SIZE];
 int  s_iPIDVideoStreamer = -1;
@@ -235,19 +239,30 @@ void rx_video_output_start_video_streamer()
       strcat(szStreamerParams, "-sm");
    #endif
 
+   #if defined (HW_PLATFORM_LINUX_GENERIC)
+   // The desktop player reads the stream from the pipe or from the shared
+   // memory, the same way the other players do.
+   if ( s_bRxVideoOutputUseSM )
+      strcat(szStreamerParams, "-sm");
+   else if ( s_bRxVideoOutputUsePipe )
+      strcat(szStreamerParams, "-p");
+   else
+      strcat(szStreamerParams, "-sm");
+   #endif
+
    if ( 0 != szStreamerParams[0] )
       strcat(szStreamerParams, " ");
    strcat(szStreamerParams, "2>&1 1>/dev/null");
 
    szStreamerPrefixes[0] = 0;
    if ( g_pControllerSettings->iPrioritiesAdjustment && (g_pControllerSettings->iThreadPriorityVideo > 100) )
-      sprintf(szStreamerPrefixes, "nice -n %d", g_pControllerSettings->iThreadPriorityVideo - 120);
+      sprintf(szStreamerPrefixes, "nice -n %d", hw_get_nice_value_for_raw_priority(g_pControllerSettings->iThreadPriorityVideo));
    #ifdef HW_CAPABILITY_IONICE
    if ( g_pControllerSettings->iPrioritiesAdjustment && (g_pControllerSettings->ioNiceRxVideo > 0) )
    {
       sprintf(szStreamerPrefixes, "ionice -c 1 -n %d", g_pControllerSettings->ioNiceRxVideo);
       if ( g_pControllerSettings->iPrioritiesAdjustment && (g_pControllerSettings->iThreadPriorityVideo > 100) )
-         sprintf(szStreamerPrefixes, "ionice -c 1 -n %d nice -n %d", g_pControllerSettings->ioNiceRxVideo, g_pControllerSettings->iThreadPriorityVideo-120);
+         sprintf(szStreamerPrefixes, "ionice -c 1 -n %d nice -n %d", g_pControllerSettings->ioNiceRxVideo, hw_get_nice_value_for_raw_priority(g_pControllerSettings->iThreadPriorityVideo));
    }
    #endif
 
@@ -452,10 +467,14 @@ void _processor_rx_video_forward_open_eth_pipe()
 {
    log_line("[VideoOutput] Creating ETH pipes for video forward...");
    char szComm[1024];
+   // The forwarder is started with a high priority. On a generic Linux
+   // desktop the application is not started as root, so the priority can not
+   // be increased, the value is limited to what the user is allowed to set.
+   int iNiceValue = hw_get_nice_value_for_raw_priority(101);
    #ifdef HW_CAPABILITY_IONICE
-   sprintf(szComm, "ionice -c 1 -n 4 nice -n -5 cat %s | nice -n -5 gst-launch-1.0 fdsrc ! h264parse ! rtph264pay pt=96 config-interval=3 ! udpsink port=%d host=127.0.0.1 > /dev/null 2>&1 &", FIFO_RUBY_STATION_VIDEO_STREAM_ETH, g_pControllerSettings->nVideoForwardETHPort);
+   sprintf(szComm, "ionice -c 1 -n 4 nice -n %d cat %s | nice -n %d gst-launch-1.0 fdsrc ! h264parse ! rtph264pay pt=96 config-interval=3 ! udpsink port=%d host=127.0.0.1 > /dev/null 2>&1 &", iNiceValue, FIFO_RUBY_STATION_VIDEO_STREAM_ETH, iNiceValue, g_pControllerSettings->nVideoForwardETHPort);
    #else
-   sprintf(szComm, "nice -n -5 cat %s | nice -n -5 gst-launch-1.0 fdsrc ! h264parse ! rtph264pay pt=96 config-interval=3 ! udpsink port=%d host=127.0.0.1 > /dev/null 2>&1 &", FIFO_RUBY_STATION_VIDEO_STREAM_ETH, g_pControllerSettings->nVideoForwardETHPort);
+   sprintf(szComm, "nice -n %d cat %s | nice -n %d gst-launch-1.0 fdsrc ! h264parse ! rtph264pay pt=96 config-interval=3 ! udpsink port=%d host=127.0.0.1 > /dev/null 2>&1 &", iNiceValue, FIFO_RUBY_STATION_VIDEO_STREAM_ETH, iNiceValue, g_pControllerSettings->nVideoForwardETHPort);
    #endif
    hw_execute_bash_command(szComm, NULL);
 
@@ -530,21 +549,33 @@ void _rx_video_output_open_pipe_to_streamer()
       return;
    }
 
-   int iRetries = 200;
+   int iRetries = 500;
    while ( iRetries > 0 )
    {
       iRetries--;
-      //s_fPipeVideoOutToStreamer = open(FIFO_RUBY_STATION_VIDEO_STREAM_DISPLAY, O_CREAT | O_WRONLY | O_NONBLOCK);
-      s_fPipeVideoOutToStreamer = open(FIFO_RUBY_STATION_VIDEO_STREAM_DISPLAY, O_CREAT | O_WRONLY);
+      // The FIFO is opened in non-blocking mode: a blocking open would wait
+      // forever for the reader (the player) if the player fails to start.
+      // The writes are blocking, as before, so the video is not lost when the
+      // player is slow: the flag is cleared after the open.
+      s_fPipeVideoOutToStreamer = open(FIFO_RUBY_STATION_VIDEO_STREAM_DISPLAY, O_CREAT | O_WRONLY | O_NONBLOCK);
       if ( s_fPipeVideoOutToStreamer < 0 )
       {
-         log_error_and_alarm("[VideoOutput] Failed to open video output pipe to streamer write endpoint: %s, error code (%d): [%s]",
-            FIFO_RUBY_STATION_VIDEO_STREAM_DISPLAY, errno, strerror(errno));
+         if ( (ENXIO != errno) && (0 != iRetries) )
+            log_error_and_alarm("[VideoOutput] Failed to open video output pipe to streamer write endpoint: %s, error code (%d): [%s]",
+               FIFO_RUBY_STATION_VIDEO_STREAM_DISPLAY, errno, strerror(errno));
          if ( iRetries == 0 )
+         {
+            log_error_and_alarm("[VideoOutput] Failed to open video output pipe to streamer write endpoint after %d tries: %s, error code (%d): [%s]",
+               500, FIFO_RUBY_STATION_VIDEO_STREAM_DISPLAY, errno, strerror(errno));
             return;
-         else
-            hardware_sleep_ms(10);
+         }
+         hardware_sleep_ms(10);
+         continue;
       }
+      // The writes to the FIFO must block, so the video is not lost when the
+      // player is slower than the radio link.
+      fcntl(s_fPipeVideoOutToStreamer, F_SETFL, 0);
+      break;
    }
    log_line("[VideoOutput] Opened video output pipe to streamer write endpoint: %s", FIFO_RUBY_STATION_VIDEO_STREAM_DISPLAY);
    log_line("[VideoOutput] Video output pipe to streamer flags: %s", str_get_pipe_flags(fcntl(s_fPipeVideoOutToStreamer, F_GETFL)));
@@ -934,6 +965,13 @@ void _rx_video_output_to_sharedmem(u8* pBuffer, u32 uLength, bool bWaitFullFrame
       s_bDidSentAnyDataToVideoStreamerSM = true;
    }
 
+   static u32 s_uLastSMTraceLog = 0;
+   if ( g_TimeNow > s_uLastSMTraceLog + 5000 )
+   {
+      s_uLastSMTraceLog = g_TimeNow;
+      log_line("[VideoTrace] SM: write_pos=%u, frame_end=%s", s_uSMVideoStreamWritePosition, bIsEndOfNALFrame?"Y":"N");
+   }
+
    if ( uLength <= (SM_STREAMER_SIZE-s_uSMVideoStreamWritePosition) )
    {
       memcpy(&(s_pSMVideoStreamerWrite[s_uSMVideoStreamWritePosition]), pBuffer, uLength);
@@ -999,20 +1037,41 @@ void _rx_video_output_to_video_streamer_pipe(u8* pBuffer, int iLength, bool bWai
          memcpy(&(s_pPipeVideoOutputBuffer[s_iPipeVideoOutputPos]), pBuffer, iLength);
          s_iPipeVideoOutputPos += iLength;
       }
+      else
+      {
+         // The staging buffer is full: the frame cannot be staged. The frame
+         // is lost, but it must not be lost silently.
+         log_softerror_and_alarm("[VideoOutput] The video output buffer is full (%d bytes), a video frame of %d bytes was dropped.",
+            s_iPipeVideoOutputPos, iLength);
+      }
       if ( (! bWaitFullFrame) || (bWaitFullFrame && bIsEndOfNALFrame) )
       {
          iExpectedWriteResult = s_iPipeVideoOutputPos;
          g_pProcessStats->uInBlockingOperation = 1;
          iRes = write(s_fPipeVideoOutToStreamer, s_pPipeVideoOutputBuffer, s_iPipeVideoOutputPos);
          g_pProcessStats->uInBlockingOperation = 0;
-         s_iPipeVideoOutputPos = 0;
+         if ( (iRes > 0) && (iRes < s_iPipeVideoOutputPos) )
+         {
+            // A partial write: the bytes that were not written are kept for
+            // the next write, they are not lost.
+            int iBytesLeft = s_iPipeVideoOutputPos - iRes;
+            memmove(s_pPipeVideoOutputBuffer, &(s_pPipeVideoOutputBuffer[iRes]), iBytesLeft);
+            s_iPipeVideoOutputPos = iBytesLeft;
+         }
+         else
+            s_iPipeVideoOutputPos = 0;
       }
    }
 
-   if ( iRes == iExpectedWriteResult )
-   {
-      s_uOutputBitrateToLocalVideoStreamerPipe += iRes*8;
-      s_uTimeStartGettingVideoIOErrors = 0;
+if ( iRes == iExpectedWriteResult )
+    {
+       s_uOutputBitrateToLocalVideoStreamerPipe += iRes*8;
+       s_uTotalBytesToLocalVideoStreamerPipe += (unsigned long long)iRes;
+       if ( s_uTotalBytesToLocalVideoStreamerPipe % (1024*1024) < (unsigned long long)iRes )
+       {
+          log_line("[VideoTrace] FIFO: total bytes to player: %llu MB, last write: %d bytes", s_uTotalBytesToLocalVideoStreamerPipe / (1024*1024), iRes);
+       }
+       s_uTimeStartGettingVideoIOErrors = 0;
       if ( 0 != s_uLastIOErrorAlarmFlagsVideoStreamer )
       {
          s_uTimeLastOkVideoStreamerOutputToPipe = g_TimeNow;
@@ -1155,7 +1214,14 @@ void rx_video_output_discard_cached_data()
    if ( s_bEnableVideoStreamerOutput && s_bRxVideoOutputUseSM )
    if ( NULL != s_pSMVideoStreamerWrite )
    {
-      s_uSMVideoStreamWritePosition = s_pSMVideoStreamerWrite[0];
+      // The write position is published as two u32 values at the start of the
+      // shared memory segment. It must be read as an u32: reading a single
+      // byte would move the write position to a wrong place in the ring and
+      // the player would read garbage.
+      // The position is not reset to the beginning of the ring: the player
+      // keeps its own read position and it would read the stale data of the
+      // ring as if the writer had wrapped around it.
+      s_uSMVideoStreamWritePosition = *((u32*)(&(s_pSMVideoStreamerWrite[0])));
    }
 
    s_iPipeVideoOutputPos = 0;
@@ -1504,4 +1570,11 @@ void rx_video_output_periodic_loop()
          }
       }
    }
+}
+
+// The number of the video bytes that reached the local video player (the
+// desktop player) since the start of the process.
+unsigned long long rx_video_output_get_bytes_to_local_video_player()
+{
+   return s_uTotalBytesToLocalVideoStreamerPipe;
 }

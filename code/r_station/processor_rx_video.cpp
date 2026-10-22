@@ -1183,7 +1183,7 @@ int ProcessorRxVideo::checkAndRequestMissingPackets(bool bForceSyncNow)
    u32 uLastRequestedVideoBlockIndex = 0;
    int iLastRequestedVideoBlockPacketIndex = 0;
 
-   char szBufferBlocks[128];
+   char szBufferBlocks[256];
    szBufferBlocks[0] = 0;
 
    int iCountPacketsRequested = 0;
@@ -1196,10 +1196,10 @@ int ProcessorRxVideo::checkAndRequestMissingPackets(bool bForceSyncNow)
       if ( i < 2 )
       {
          if ( 0 != szBufferBlocks[0] )
-            strcat(szBufferBlocks, ", ");
+            strncat(szBufferBlocks, ", ", sizeof(szBufferBlocks) - strlen(szBufferBlocks) - 1);
          char szTmp[128];
-         sprintf(szTmp, "[f%d %u %d/%d pckts of %d/%d, eof %d]", pVideoBlock->uH264FrameIndex, pVideoBlock->uVideoBlockIndex, pVideoBlock->iRecvDataPackets, pVideoBlock->iRecvECPackets, pVideoBlock->iBlockDataPackets, pVideoBlock->iBlockECPackets, pVideoBlock->iLastRecordedEOF);
-         strcat(szBufferBlocks, szTmp);
+         snprintf(szTmp, sizeof(szTmp), "[f%d %u %d/%d pckts of %d/%d, eof %d]", pVideoBlock->uH264FrameIndex, pVideoBlock->uVideoBlockIndex, pVideoBlock->iRecvDataPackets, pVideoBlock->iRecvECPackets, pVideoBlock->iBlockDataPackets, pVideoBlock->iBlockECPackets, pVideoBlock->iLastRecordedEOF);
+         strncat(szBufferBlocks, szTmp, sizeof(szBufferBlocks) - strlen(szBufferBlocks) - 1);
       }
 
       if ( 0 == (pVideoBlock->iRecvDataPackets + pVideoBlock->iRecvECPackets) )
@@ -1269,10 +1269,10 @@ int ProcessorRxVideo::checkAndRequestMissingPackets(bool bForceSyncNow)
       //uTopVideoBlockLastRecvTime = pVideoBlock->uReceivedTime;
 
       if ( 0 != szBufferBlocks[0] )
-         strcat(szBufferBlocks, ", ");
+         strncat(szBufferBlocks, ", ", sizeof(szBufferBlocks) - strlen(szBufferBlocks) - 1);
       char szTmp[128];
-      sprintf(szTmp, "t[f%d %u %d/%d pckts of %d/%d, eof %d]", pVideoBlock->uH264FrameIndex, pVideoBlock->uVideoBlockIndex, pVideoBlock->iRecvDataPackets, pVideoBlock->iRecvECPackets, pVideoBlock->iBlockDataPackets, pVideoBlock->iBlockECPackets, pVideoBlock->iLastRecordedEOF);
-      strcat(szBufferBlocks, szTmp);
+      snprintf(szTmp, sizeof(szTmp), "t[f%d %u %d/%d pckts of %d/%d, eof %d]", pVideoBlock->uH264FrameIndex, pVideoBlock->uVideoBlockIndex, pVideoBlock->iRecvDataPackets, pVideoBlock->iRecvECPackets, pVideoBlock->iBlockDataPackets, pVideoBlock->iBlockECPackets, pVideoBlock->iLastRecordedEOF);
+      strncat(szBufferBlocks, szTmp, sizeof(szBufferBlocks) - strlen(szBufferBlocks) - 1);
 
       bool bRequestData = false;
 

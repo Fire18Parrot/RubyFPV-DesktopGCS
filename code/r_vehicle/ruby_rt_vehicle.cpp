@@ -64,6 +64,7 @@
 #include "../base/radio_utils.h"
 #include "../base/encr.h"
 #include "../base/ruby_ipc.h"
+#include "../base/radio_profiles.h"
 #include "../base/utils.h"
 #include "../base/camera_utils.h"
 #include "../base/vehicle_settings.h"
@@ -1146,6 +1147,15 @@ int main(int argc, char *argv[])
    hardware_serial_reload_ports_settings();
 
    hardware_enumerate_radio_interfaces(); 
+
+   // The RF profiles are stored by the central user interface, the vehicle
+   // reads them and applies them to the radio interfaces when the radio
+   // links are configured.
+   radio_profiles_init();
+   if ( ! radio_profiles_load() )
+      log_line("No RF profiles were loaded, the radio interfaces are configured by the radio links only.");
+   else
+      log_line("Loaded %d RF profile(s).", radio_profiles_get_count());
 
    reset_sik_state_info(&g_SiKRadiosState);
 

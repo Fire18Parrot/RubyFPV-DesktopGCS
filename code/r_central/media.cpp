@@ -153,23 +153,30 @@ bool media_init_and_scan()
 void media_scan_files()
 {
    char szOutBuff[1024];
+   char szComm[1024];
 
    _media_remove_invalid_files();
  
 
-   // Count files in a folder:
-   // ls media/ | grep picture- | wc -l
-   // ls media/ | grep '.info' | wc -l
+   // Count files in the media folder:
+   // ls <media folder> | grep picture- | wc -l
+   // ls <media folder> | grep '.info' | wc -l
+   //
+   // The media folder is used with its full path, a relative path would
+   // depend on the current working directory of the process, that is not the
+   // media folder on a generic Linux desktop.
 
    s_iScreenshotsCountOnDisk = 0;
    szOutBuff[0] = 0;
-   hw_execute_bash_command("ls media/ | grep picture- | wc -l", szOutBuff);
+   snprintf(szComm, sizeof(szComm)/sizeof(szComm[0]), "ls %s | grep picture- | wc -l", FOLDER_MEDIA);
+   hw_execute_bash_command(szComm, szOutBuff);
    if ( 0 < strlen(szOutBuff) )
       s_iScreenshotsCountOnDisk = strtol(szOutBuff, NULL, 10);
 
    s_iVideoCountOnDisk = 0;
    szOutBuff[0] = 0;
-   hw_execute_bash_command("ls media/ | grep '.info' | wc -l", szOutBuff);
+   snprintf(szComm, sizeof(szComm)/sizeof(szComm[0]), "ls %s | grep '.info' | wc -l", FOLDER_MEDIA);
+   hw_execute_bash_command(szComm, szOutBuff);
    if ( 0 < strlen(szOutBuff) )
       s_iVideoCountOnDisk = strtol(szOutBuff, NULL, 10);
 

@@ -10,6 +10,35 @@
 #define FIFO_RUBY_STATION_VIDEO_STREAM_RECORDING "/tmp/ruby/fifovideo_rec"
 #define FIFO_RUBY_STATION_VIDEO_STREAM_ETH "/tmp/ruby/fifovideo_eth"
 
+// The named pipes used for the inter process communication
+#define FIFO_RUBY_ROUTER_TO_CENTRAL "/tmp/ruby/fiforoutercentral"
+#define FIFO_RUBY_CENTRAL_TO_ROUTER "/tmp/ruby/fifocentralrouter"
+#define FIFO_RUBY_ROUTER_TO_COMMANDS "/tmp/ruby/fiforoutercommands"
+#define FIFO_RUBY_COMMANDS_TO_ROUTER "/tmp/ruby/fifocommandsrouter"
+#define FIFO_RUBY_ROUTER_TO_TELEMETRY "/tmp/ruby/fiforoutertelemetry"
+#define FIFO_RUBY_TELEMETRY_TO_ROUTER "/tmp/ruby/fifotelemetryrouter"
+#define FIFO_RUBY_ROUTER_TO_RC "/tmp/ruby/fiforouterrc"
+#define FIFO_RUBY_RC_TO_ROUTER "/tmp/ruby/fifocrouter"
+
+// All the named pipes of the application. They are removed at startup, before
+// they are created again.
+#define RUBY_FIFO_NAMES \
+   FIFO_RUBY_CAMERA1, \
+   FIFO_RUBY_AUDIO1, \
+   FIFO_RUBY_AUDIO_QUEUE, \
+   FIFO_RUBY_AUDIO_BUFF, \
+   FIFO_RUBY_STATION_VIDEO_STREAM_DISPLAY, \
+   FIFO_RUBY_STATION_VIDEO_STREAM_RECORDING, \
+   FIFO_RUBY_STATION_VIDEO_STREAM_ETH, \
+   FIFO_RUBY_ROUTER_TO_CENTRAL, \
+   FIFO_RUBY_CENTRAL_TO_ROUTER, \
+   FIFO_RUBY_ROUTER_TO_COMMANDS, \
+   FIFO_RUBY_COMMANDS_TO_ROUTER, \
+   FIFO_RUBY_ROUTER_TO_TELEMETRY, \
+   FIFO_RUBY_TELEMETRY_TO_ROUTER, \
+   FIFO_RUBY_ROUTER_TO_RC, \
+   FIFO_RUBY_RC_TO_ROUTER
+
 #define SEMAPHORE_RESTART_VIDEO_STREAMER "RUBY_SEM_RESTART_VIDEO_STREAMER"
 #define SEMAPHORE_VIDEO_STREAMER_OVERLOAD "RUBY_SEM_VIDEO_STREAMER_OVERLOAD"
 

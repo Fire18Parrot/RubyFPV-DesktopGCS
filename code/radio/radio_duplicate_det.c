@@ -207,9 +207,18 @@ int radio_dup_detection_is_duplicate_on_stream(int iRadioInterfaceIndex, u8* pPa
    
    u32 uVehicleId = pPH->vehicle_id_src;
    u32 uStreamPacketIndex = (pPH->stream_packet_idx) & PACKET_FLAGS_MASK_STREAM_PACKET_IDX;
-   u32 uStreamIndex = (pPH->stream_packet_idx)>>PACKET_FLAGS_MASK_SHIFT_STREAM_INDEX; 
-   u8 uPacketType = pPH->packet_type;   
+   u32 uStreamIndex = (pPH->stream_packet_idx)>>PACKET_FLAGS_MASK_SHIFT_STREAM_INDEX;
+   u8 uPacketType = pPH->packet_type;
    int iStatsIndex = -1;
+
+   // The stream id comes from the packet: it is used as an index in the
+   // stream history of the vehicle, so it must be checked before it is used.
+   if ( uStreamIndex >= MAX_RADIO_STREAMS )
+   {
+      log_softerror_and_alarm("[RadioDuplicateDetection] Received a packet with an invalid stream id %u, it must be less than %d.",
+         uStreamIndex, MAX_RADIO_STREAMS);
+      return 1;
+   }
 
    iStatsIndex = _radio_dup_detection_get_runtime_index_for_vid(uVehicleId, pPacketBuffer, iPacketLength);
    if ( -1 == iStatsIndex )

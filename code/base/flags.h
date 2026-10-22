@@ -42,6 +42,7 @@
 #define MODEL_TYPE_LAST 8
 
 #define MODEL_FIRMWARE_TYPE_RUBY 0
+#define MODEL_FIRMWARE_TYPE_OPENIPC 1
 
 // Encryption flags for models
 

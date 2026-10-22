@@ -470,6 +470,9 @@ void try_read_messages_from_router()
          continue;
       }
       
+      if ( NULL == g_pCurrentModel )
+         break;
+
       if ( pPH->vehicle_id_src != g_pCurrentModel->uVehicleId )
       {
          if ( maxMessagesToRead <= 0 )

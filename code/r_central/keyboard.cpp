@@ -46,6 +46,13 @@
 #define MAX_INPUT_EVENTS 64
 #define MAX_INPUT_DEVICES 6
 
+// The delay after which a key that is held down starts to auto-repeat, the
+// interval between two auto-repeat events and the time after which a key
+// press is considered a long press.
+#define KEY_REPEAT_DELAY_MS 400
+#define KEY_REPEAT_INTERVAL_MS 120
+#define KEY_LONG_PRESS_MS 800
+
 bool s_bKeyboardInitDone = false;
 pthread_t s_pThreadKeyboard;
 pthread_mutex_t s_pThreadKeyboardMutex;
@@ -68,6 +75,19 @@ u32 s_uKeyboardInputEvents[MAX_INPUT_EVENTS];
 int s_iCountKeyboardInputEvents = 0;
 u32 s_uKeyboardInputEventsSum = 0;
 u32 s_uKeyboardLastQAActionEventTime = 0;
+
+// Keeps track of the keys that are currently held down, so that a long press
+// can be detected and so that the auto-repeat of the keyboard can be filtered.
+#define MAX_TRACKED_KEYS 16
+typedef struct
+{
+   int  iKey;         // the key code (SDL scancode or Linux key code)
+   u32  uEvent;       // the RubyFPV input event associated with the key
+   u32  uPressTime;   // the timestamp (ms) of the last press
+   bool bPressed;     // true while the key is held down
+} tracked_key_info;
+tracked_key_info s_TrackedKeys[MAX_TRACKED_KEYS];
+int s_iCountTrackedKeys = 0;
 
 
 bool _input_device_has_key(int iFile, int iKey)
@@ -276,8 +296,7 @@ void _add_input_event(u32 uEvent, bool bFromKeyboard)
       s_uKeyboardLastQAActionEventTime = get_current_timestamp_ms();
    }
 
-   //if ( uEvent == INPUT_EVENT_PRESS_MENU )
-      log_line("[Input] Added input event %u %s, %d events already in queue", uEvent, bFromKeyboard?"from keyboard":"from GPIO", s_iCountKeyboardInputEvents);
+   log_line("[Input] Added input event %u %s, %d events already in queue", uEvent, bFromKeyboard?"from keyboard":"from GPIO", s_iCountKeyboardInputEvents);
    int iLock = pthread_mutex_lock(&s_pThreadKeyboardMutex);
 
    s_uKeyboardInputEvents[s_iCountKeyboardInputEvents] = uEvent;
@@ -290,6 +309,102 @@ void _add_input_event(u32 uEvent, bool bFromKeyboard)
    }
    if ( 0 == iLock )
          pthread_mutex_unlock(&s_pThreadKeyboardMutex);
+}
+
+// Finds a tracked key by its key code. Returns NULL if the key is not tracked.
+static tracked_key_info* _find_tracked_key(int iKey)
+{
+   for( int i=0; i<s_iCountTrackedKeys; i++ )
+      if ( s_TrackedKeys[i].iKey == iKey )
+         return &s_TrackedKeys[i];
+   return NULL;
+}
+
+// Registers a key press. It returns false if the key was already pressed
+// (auto-repeat), in which case no new event is generated.
+bool keyboard_add_key_press(int iKey, u32 uEvent)
+{
+   bool bNewPress = false;
+
+   pthread_mutex_lock(&s_pThreadKeyboardMutex);
+
+   tracked_key_info* pKey = _find_tracked_key(iKey);
+   if ( NULL == pKey )
+   {
+      if ( s_iCountTrackedKeys < MAX_TRACKED_KEYS )
+      {
+         pKey = &s_TrackedKeys[s_iCountTrackedKeys];
+         s_iCountTrackedKeys++;
+         pKey->iKey = iKey;
+         pKey->uEvent = uEvent;
+         pKey->uPressTime = get_current_timestamp_ms();
+         pKey->bPressed = true;
+         bNewPress = true;
+      }
+   }
+   else if ( ! pKey->bPressed )
+   {
+      // The key was released before, so this is a new press.
+      pKey->uEvent = uEvent;
+      pKey->uPressTime = get_current_timestamp_ms();
+      pKey->bPressed = true;
+      bNewPress = true;
+   }
+   else
+   {
+      // The key is already down: this is an auto-repeat. Do not generate a
+      // new event, but refresh the press time so that the long press timer
+      // is restarted.
+      pKey->uPressTime = get_current_timestamp_ms();
+   }
+
+   pthread_mutex_unlock(&s_pThreadKeyboardMutex);
+
+   if ( bNewPress )
+      _add_input_event(uEvent, true);
+   return bNewPress;
+}
+
+// Registers a key release.
+void keyboard_add_key_release(int iKey)
+{
+   pthread_mutex_lock(&s_pThreadKeyboardMutex);
+   tracked_key_info* pKey = _find_tracked_key(iKey);
+   if ( NULL != pKey )
+      pKey->bPressed = false;
+   pthread_mutex_unlock(&s_pThreadKeyboardMutex);
+}
+
+// Returns true if any of the tracked keys is held down for longer than
+// the given number of milliseconds.
+bool keyboard_is_key_long_pressed(u32 uMinMs)
+{
+   bool bLong = false;
+   u32 uNow = get_current_timestamp_ms();
+
+   pthread_mutex_lock(&s_pThreadKeyboardMutex);
+   for( int i=0; i<s_iCountTrackedKeys; i++ )
+   {
+      if ( ! s_TrackedKeys[i].bPressed )
+         continue;
+      if ( uNow >= s_TrackedKeys[i].uPressTime + uMinMs )
+         bLong = true;
+   }
+   pthread_mutex_unlock(&s_pThreadKeyboardMutex);
+
+   return bLong;
+}
+
+// Returns the number of keys that are currently held down.
+int keyboard_get_pressed_keys_count()
+{
+   int iCount = 0;
+   pthread_mutex_lock(&s_pThreadKeyboardMutex);
+   for( int i=0; i<s_iCountTrackedKeys; i++ )
+      if ( s_TrackedKeys[i].bPressed )
+         iCount++;
+   pthread_mutex_unlock(&s_pThreadKeyboardMutex);
+   return iCount;
 }
 
 int _read_keyboard_input_events()
@@ -467,6 +582,13 @@ int keyboard_init()
       return 0;
    }
 
+#ifdef HW_PLATFORM_LINUX_GENERIC
+   // On the desktop build the SDL2 window is the only keyboard source, so the
+   // Linux evdev reader thread is not started. It would steal the key presses
+   // from the other applications running on the desktop.
+   log_line("[Keyboard] Desktop build: using the SDL2 window as the keyboard source.");
+   return 1;
+#else
    pthread_attr_t attr;
    int iPrio = pCS->iThreadPriorityCentral;
    if ( pCS->iPrioritiesAdjustment && (iPrio > 2) && (iPrio < 98) )
@@ -484,6 +606,7 @@ int keyboard_init()
    }
    pthread_attr_destroy(&attr);
    return 1;
+#endif
 }
 
 int keyboard_uninit()
@@ -496,7 +619,11 @@ int keyboard_uninit()
    pthread_mutex_lock(&s_pThreadKeyboardMutex);
    pthread_mutex_unlock(&s_pThreadKeyboardMutex);
 
+#ifdef HW_PLATFORM_LINUX_GENERIC
+   // The desktop build does not start the evdev reader thread.
+#else
    pthread_cancel(s_pThreadKeyboard);
+#endif
    pthread_mutex_destroy(&s_pThreadKeyboardMutex);
 
    for( int i=0; i<MAX_INPUT_DEVICES; i++ )
@@ -544,7 +671,23 @@ int keyboard_consume_input_events()
       if ( 0 == s_iCountKeyboardInputEvents )
          break;
       u32 uEvent = keyboard_get_next_input_event();
-      s_uKeyboardInputEventsSum |= (uEvent & 0xFFFF);
+
+      // The Plus and the Minus keys are opposite actions: if both of them
+      // are pressed in the same frame, only the last one is kept. Otherwise
+      // the menu would move up and down at the same time.
+      if ( uEvent & INPUT_EVENT_PRESS_PLUS )
+      {
+         s_uKeyboardInputEventsSum &= ~INPUT_EVENT_PRESS_MINUS;
+         s_uKeyboardInputEventsSum |= INPUT_EVENT_PRESS_PLUS;
+      }
+      else if ( uEvent & INPUT_EVENT_PRESS_MINUS )
+      {
+         s_uKeyboardInputEventsSum &= ~INPUT_EVENT_PRESS_PLUS;
+         s_uKeyboardInputEventsSum |= INPUT_EVENT_PRESS_MINUS;
+      }
+      else
+         s_uKeyboardInputEventsSum |= (uEvent & 0xFFFF);
+
       // If unknown key was pressed, it is stored in the 3rd byte
       if ( uEvent & 0xFF0000 )
       {
@@ -553,13 +696,68 @@ int keyboard_consume_input_events()
       }
       iCounter--;
    }
-   //log_line("[Keyboard] Consumed %d events: %u", i, s_uKeyboardInputEventsSum);
    return 0;
 }
 
 int keyboard_has_long_press_flag()
 {
    return s_bHasLongPressFlag?1:0;
+}
+
+// Updates the state of the held keys: it sets the long press flag and it
+// generates the auto-repeat events for the keys that are held down.
+void keyboard_update_held_keys()
+{
+   static u32 s_uLastRepeatTime = 0;
+   u32 uNow = get_current_timestamp_ms();
+
+   s_bHasLongPressFlag = keyboard_is_key_long_pressed(KEY_LONG_PRESS_MS);
+
+   // The auto-repeat is generated only after the initial delay, and then at
+   // a fixed rate, so that holding a key scrolls the menu at a usable speed.
+   if ( uNow < s_uLastRepeatTime )
+      return;
+   if ( uNow < s_uLastRepeatTime + KEY_REPEAT_INTERVAL_MS )
+      return;
+
+   bool bRepeat = false;
+   pthread_mutex_lock(&s_pThreadKeyboardMutex);
+   for( int i=0; i<s_iCountTrackedKeys; i++ )
+   {
+      if ( ! s_TrackedKeys[i].bPressed )
+         continue;
+      if ( uNow < s_TrackedKeys[i].uPressTime + KEY_REPEAT_DELAY_MS )
+         continue;
+      bRepeat = true;
+      break;
+   }
+   pthread_mutex_unlock(&s_pThreadKeyboardMutex);
+
+   if ( ! bRepeat )
+      return;
+
+   s_uLastRepeatTime = uNow;
+
+   // Generate the auto-repeat events, one for each key that is held down
+   // for long enough.
+   pthread_mutex_lock(&s_pThreadKeyboardMutex);
+   u32 uEvents[8];
+   int iCount = 0;
+   for( int i=0; i<s_iCountTrackedKeys; i++ )
+   {
+      if ( ! s_TrackedKeys[i].bPressed )
+         continue;
+      if ( uNow < s_TrackedKeys[i].uPressTime + KEY_REPEAT_DELAY_MS )
+         continue;
+      if ( iCount >= 8 )
+         break;
+      uEvents[iCount] = s_TrackedKeys[i].uEvent;
+      iCount++;
+   }
+   pthread_mutex_unlock(&s_pThreadKeyboardMutex);
+
+   for( int i=0; i<iCount; i++ )
+      _add_input_event(uEvents[i], true);
 }
 
 u32 keyboard_get_triggered_input_events()
@@ -590,4 +788,15 @@ u32 keyboard_add_triggered_gpio_input_events()
       s_uKeyboardInputEventsSum |= INPUT_EVENT_PRESS_QA3;
 
    return s_uKeyboardInputEventsSum;
+}
+
+// Injects an input event into the keyboard event queue.
+// Used by the desktop build, where the SDL2 window delivers the key presses
+// instead of the Linux evdev input devices.
+void keyboard_add_input_event(u32 uEvent)
+{
+   if ( 0 == uEvent )
+      return;
+
+   _add_input_event(uEvent, true);
 }

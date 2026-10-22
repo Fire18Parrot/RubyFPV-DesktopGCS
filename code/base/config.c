@@ -195,7 +195,10 @@ u32 load_simple_config_fileU(const char* fileName, u32 defaultValue)
    FILE* fd = fopen(fileName, "r");
    if ( NULL == fd )
    {
-      log_softerror_and_alarm("Failed to load simple configuration from file: %s (missing file)",fileName);
+      // The file is created with the default value, so that it is found at
+      // the next start.
+      log_line("Configuration file %s was not found, saving the default value (%u).", fileName, defaultValue);
+      save_simple_config_fileU(fileName, defaultValue);
       return defaultValue;
    }
    if ( 1 != fscanf(fd, "%u", &returnValue) )
@@ -231,7 +234,10 @@ int load_simple_config_fileI(const char* fileName, int defaultValue)
    FILE* fd = fopen(fileName, "r");
    if ( NULL == fd )
    {
-      log_softerror_and_alarm("Failed to load simple configuration from file: %s (missing file)",fileName);
+      // The file is created with the default value, so that it is found at
+      // the next start.
+      log_line("Configuration file %s was not found, saving the default value (%d).", fileName, defaultValue);
+      save_simple_config_fileI(fileName, defaultValue);
       return defaultValue;
    }
    if ( 1 != fscanf(fd, "%d", &returnValue) )
@@ -291,6 +297,23 @@ FILE* try_open_base_version_file(char* szOutputFile)
          strcpy(szOutputFile, szFile);
       return fd;
    }
+
+   // On a desktop build the version file is in the folder of the application,
+   // which is the current working directory of the process. The name of the
+   // file is the same as everywhere else.
+   strcpy(szFile, FILE_INFO_VERSION);
+   fd = fopen(szFile, "r");
+   if ( NULL != fd )
+   {
+      if ( NULL != szOutputFile )
+         strcpy(szOutputFile, szFile);
+      return fd;
+   }
+
+   // The file was not found in any of the places where it could be. The last
+   // path that was tried is returned, so that the error message is useful.
+   if ( NULL != szOutputFile )
+      strcpy(szOutputFile, szFile);
 
    return fd;
 }

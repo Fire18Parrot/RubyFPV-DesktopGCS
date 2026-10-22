@@ -1,5 +1,6 @@
 #pragma once
 #include "config_hw.h"
+#include "config_paths.h"
 
 #define MAX_FILE_PATH_SIZE 128
 
@@ -39,7 +40,9 @@
 #define FILE_CONFIG_CURRENT_VEHICLE_MODEL_BACKUP "current_vehicle.bak"
 #define FILE_CONFIG_CURRENT_VEHICLE_COUNT "current_vehicle_count.cfg"
 #define FILE_CONFIG_CURRENT_SEARCH_BAND "current_search_band.cfg"
+#define FILE_CONFIG_CURRENT_SEARCH_FIRMWARE "current_search_firmware.cfg"
 #define FILE_CONFIG_CURRENT_RADIO_HW_CONFIG "current_radios.cfg"
+#define FILE_CONFIG_RF_PROFILES "rf_profiles.cfg"
 #define FILE_CONFIG_HARDWARE_I2C_DEVICES "i2c_devices_settings.cfg"
 #define FILE_CONFIG_ENCRYPTION_PASS "current_pph.cfg"
 #define FILE_CONFIG_HW_SERIAL_PORTS "hw_serial.cfg"
@@ -101,15 +104,14 @@
 
 #define FOLDER_BINARIES "/home/pi/ruby/"
 #define FOLDER_DRIVERS "/home/pi/ruby/drivers/"
-#define FOLDER_CONFIG "/home/pi/ruby/config/"
-#define FOLDER_CONFIG_MODELS "/home/pi/ruby/config/models/"
-#define FOLDER_VEHICLE_HISTORY "/home/pi/ruby/config/models/history-%d/"
+#define FOLDER_CONFIG_PATH "/home/pi/ruby/config/"
+#define FOLDER_CONFIG_MODELS_PATH "/home/pi/ruby/config/models/"
 #define FOLDER_LOGS "/home/pi/ruby/logs/"
 #define FOLDER_MEDIA "/home/pi/ruby/media/"
 #define FOLDER_MEDIA_VEHICLE_DATA "/home/pi/ruby/media/vehicle-%u/"
 #define FOLDER_RESOURCES "/home/pi/ruby/res/"
-#define FOLDER_OSD_PLUGINS "/home/pi/ruby/plugins/osd/"
-#define FOLDER_CORE_PLUGINS "/home/pi/ruby/plugins/core/"
+#define FOLDER_OSD_PLUGINS_PATH "/home/pi/ruby/plugins/osd/"
+#define FOLDER_CORE_PLUGINS_PATH "/home/pi/ruby/plugins/core/"
 #define FOLDER_UPDATES "/home/pi/ruby/updates/"
 #define FOLDER_RUBY_TEMP "/home/pi/ruby/tmp/"
 #define FOLDER_USB_MOUNT "/home/pi/ruby/tmp/tmpusbfiles/"
@@ -149,15 +151,14 @@
 
 #define FOLDER_BINARIES "/home/radxa/ruby/"
 #define FOLDER_DRIVERS "/home/radxa/ruby/drivers/"
-#define FOLDER_CONFIG "/home/radxa/ruby/config/"
-#define FOLDER_CONFIG_MODELS "/home/radxa/ruby/config/models/"
-#define FOLDER_VEHICLE_HISTORY "/home/radxa/ruby/config/models/history-%d/"
+#define FOLDER_CONFIG_PATH "/home/radxa/ruby/config/"
+#define FOLDER_CONFIG_MODELS_PATH "/home/radxa/ruby/config/models/"
 #define FOLDER_LOGS "/home/radxa/ruby/logs/"
 #define FOLDER_MEDIA "/home/radxa/ruby/media/"
 #define FOLDER_MEDIA_VEHICLE_DATA "/home/radxa/ruby/media/vehicle-%u/"
 #define FOLDER_RESOURCES "/home/radxa/ruby/res/"
-#define FOLDER_OSD_PLUGINS "/home/radxa/ruby/plugins/osd/"
-#define FOLDER_CORE_PLUGINS "/home/radxa/ruby/plugins/core/"
+#define FOLDER_OSD_PLUGINS_PATH "/home/radxa/ruby/plugins/osd/"
+#define FOLDER_CORE_PLUGINS_PATH "/home/radxa/ruby/plugins/core/"
 #define FOLDER_UPDATES "/home/radxa/ruby/updates/"
 #define FOLDER_RUBY_TEMP "/home/radxa/ruby/tmp/"
 #define FOLDER_USB_MOUNT "/home/radxa/ruby/tmp/tmpusbfiles/"
@@ -186,15 +187,14 @@
 
 #define FOLDER_BINARIES "/usr/sbin/"
 #define FOLDER_DRIVERS "/usr/sbin/drivers/"
-#define FOLDER_CONFIG "/root/ruby/config/"
-#define FOLDER_CONFIG_MODELS "/root/ruby/config/models/"
-#define FOLDER_VEHICLE_HISTORY "/root/ruby/config/models/history-%d/"
+#define FOLDER_CONFIG_PATH "/root/ruby/config/"
+#define FOLDER_CONFIG_MODELS_PATH "/root/ruby/config/models/"
 #define FOLDER_LOGS "/tmp/logs/"
 #define FOLDER_MEDIA "/tmp/media/"
 #define FOLDER_MEDIA_VEHICLE_DATA "/tmp/media/vehicle-%u/"
 #define FOLDER_RESOURCES "/tmp/res/"
-#define FOLDER_OSD_PLUGINS "/root/ruby/plugins/osd/"
-#define FOLDER_CORE_PLUGINS "/root/ruby/plugins/core/"
+#define FOLDER_OSD_PLUGINS_PATH "/root/ruby/plugins/osd/"
+#define FOLDER_CORE_PLUGINS_PATH "/root/ruby/plugins/core/"
 #define FOLDER_UPDATES "/tmp/updates/"
 #define FOLDER_RUBY_TEMP "/tmp/ruby/tmp/"
 #define FOLDER_USB_MOUNT "/tmp/tmpusbfiles/"
@@ -214,9 +214,64 @@
 #endif
 
 // --------------------------------------------------------------------------
+// Desktop (Linux x86_64) build
+// --------------------------------------------------------------------------
+
+#ifdef HW_PLATFORM_LINUX_GENERIC
+
+#define FOLDER_BINARIES "/tmp/ruby/bin/"
+#define FOLDER_DRIVERS "/tmp/ruby/drivers/"
+// The configuration of the desktop build is stored in the configuration
+// folder of the user (~/.config/rubyfpv/), so that it survives a restart of
+// the computer. The folders below are the ones of the old desktop
+// installation: they are used only to migrate the settings of an existing
+// installation, at the first start of the new version.
+#define FOLDER_CONFIG_LEGACY "/tmp/ruby/config/"
+#define FOLDER_CONFIG_MODELS_LEGACY "/tmp/ruby/config/models/"
+#define FOLDER_LOGS "/tmp/ruby/logs/"
+#define FOLDER_MEDIA "/tmp/ruby/media/"
+#define FOLDER_MEDIA_VEHICLE_DATA "/tmp/ruby/media/vehicle-%u/"
+#define FOLDER_RESOURCES "/tmp/ruby/res/"
+#define FOLDER_OSD_PLUGINS_LEGACY "/tmp/ruby/plugins/osd/"
+#define FOLDER_CORE_PLUGINS_LEGACY "/tmp/ruby/plugins/core/"
+#define FOLDER_UPDATES "/tmp/ruby/updates/"
+#define FOLDER_RUBY_TEMP "/tmp/ruby/tmp/"
+#define FOLDER_USB_MOUNT "/tmp/ruby/tmp/tmpusbfiles/"
+#define FOLDER_TEMP_VIDEO_MEM "/tmp/ruby/memdisk/"
+#define FOLDER_WINDOWS_PARTITION ""
+#define FOLDER_CALIBRATION_FILES "/tmp/ruby/cal/"
+
+#define FILE_FORCE_VEHICLE "/tmp/ruby/forcevehicle"
+#define FILE_FORCE_VEHICLE_NO_CAMERA "/tmp/ruby/force_no_camera"
+#define FILE_FORCE_CONTROLLER "/tmp/ruby/forcecontroller"
+#define FILE_FORCE_ROUTER "/tmp/ruby/forcerouter"
+#define FILE_FORCE_RESET "/tmp/ruby/forcereset"
+#define FILE_BOOT_LOG_STEPS "/tmp/ruby/bootstepslog.txt"
+
+// Desktop doesn't have a hardware video recorder, the video player decodes the
+// stream with GStreamer (code/r_player/ruby_player_desktop.cpp).
+#define VIDEO_RECORDER_COMMAND "ruby_capture_stub"
+#define VIDEO_PLAYER_PIPE "ruby_player_desktop"
+#define VIDEO_PLAYER_SM "ruby_player_desktop"
+#define VIDEO_PLAYER_OFFLINE "ruby_player_desktop"
+
+#endif
+
+// --------------------------------------------------------------------------
 
 
 
 #define FILE_ID_VEHICLE_LOG 0
 #define FILE_ID_VEHICLE_LOGS_ARCHIVE 1
 #define FILE_ID_CORE_PLUGINS_ARCHIVE 5
+
+// --------------------------------------------------------------------------
+// The folders of the configuration are resolved at runtime: on the desktop
+// build they are in the configuration folder of the user, so that the
+// settings of the application survive a restart of the computer.
+// --------------------------------------------------------------------------
+
+#define FOLDER_CONFIG config_get_config_folder()
+#define FOLDER_CONFIG_MODELS config_get_config_models_folder()
+#define FOLDER_OSD_PLUGINS config_get_osd_plugins_folder()
+#define FOLDER_CORE_PLUGINS config_get_core_plugins_folder()

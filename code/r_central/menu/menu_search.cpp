@@ -94,6 +94,7 @@ MenuSearch::MenuSearch(void)
    m_SupportedBands = 0;
    m_iCountSupportedBands = 0;
    m_iSearchModelTypes = 0;
+   m_SearchFirmwareType = 0;
 
    m_bHasSiKRadio = false;
    m_uSiKBands = 0;
@@ -432,6 +433,13 @@ void MenuSearch::_add_menu_items()
 
    m_IndexBand = addMenuItem(m_pItemSelectBand);
 
+   // Firmware type selector for search
+   m_pItemSelectFirmware = new MenuItemSelect(L("Firmware Type:"), L("Select the firmware type of vehicles to search for."));
+   m_pItemSelectFirmware->addSelection("Ruby");
+   m_pItemSelectFirmware->addSelection("OpenIPC");
+   m_pItemSelectFirmware->setIsEditable();
+   m_IndexFirmware = addMenuItem(m_pItemSelectFirmware);
+
    m_IndexModelTypes = -1;
    
    m_IndexStartSearch = addMenuItem(new MenuItem(L("Start Search"), L("Start/Stop searching for vehicles on current band.")));
@@ -547,6 +555,14 @@ void MenuSearch::onShow()
    strcat(szFile, FILE_CONFIG_CURRENT_SEARCH_BAND);
    save_simple_config_fileI(szFile, m_SearchBandIndex);
    m_pItemSelectBand->setSelection(m_SearchBandIndex);
+
+   // Load search firmware type from config
+   strcpy(szFile, FOLDER_CONFIG);
+   strcat(szFile, FILE_CONFIG_CURRENT_SEARCH_FIRMWARE);
+   m_SearchFirmwareType = load_simple_config_fileI(szFile, 0);
+   if ( m_SearchFirmwareType > 1 )
+      m_SearchFirmwareType = 0;
+   m_pItemSelectFirmware->setSelection(m_SearchFirmwareType);
 
    m_bIsSearchingAuto = false;
    m_bIsSearchingManual = false;
@@ -978,7 +994,7 @@ void MenuSearch::onSearchStep()
              pairing_start_search_sik_mode(m_CurrentSearchFrequencyKhz, iAirDataRate, iECC, iLBT, iMCSTR);
          }  
          else
-            pairing_start_search_mode(m_CurrentSearchFrequencyKhz, m_iSearchModelTypes);
+            pairing_start_search_mode(m_CurrentSearchFrequencyKhz, m_SearchFirmwareType);
 
          hardware_sleep_ms(delayMs);
       }
@@ -1293,7 +1309,7 @@ void MenuSearch::onReturnFromChild(int iChildMenuId, int returnValue)
 
       ruby_set_active_model_id(g_pCurrentModel->uVehicleId);
      
-      if ( g_pCurrentModel->getVehicleFirmwareType() == MODEL_FIRMWARE_TYPE_RUBY )
+      if ( g_pCurrentModel->getVehicleFirmwareType() == MODEL_FIRMWARE_TYPE_RUBY || g_pCurrentModel->getVehicleFirmwareType() == MODEL_FIRMWARE_TYPE_OPENIPC )
          g_pCurrentModel->b_mustSyncFromVehicle = true;
       log_line("MenuSearch: Changed current main vehicle to vehicle id %u", g_pCurrentModel->uVehicleId);
       if ( bIsNew )
@@ -1399,6 +1415,16 @@ void MenuSearch::onSelectItem()
       strcpy(szFile, FOLDER_CONFIG);
       strcat(szFile, FILE_CONFIG_CURRENT_SEARCH_BAND);
       save_simple_config_fileI(szFile, m_SearchBandIndex);
+      return;
+   }
+
+   if ( m_IndexFirmware == m_SelectedIndex )
+   {
+      m_SearchFirmwareType = m_pItemSelectFirmware->getSelectedIndex();
+      char szFile[128];
+      strcpy(szFile, FOLDER_CONFIG);
+      strcat(szFile, FILE_CONFIG_CURRENT_SEARCH_FIRMWARE);
+      save_simple_config_fileI(szFile, m_SearchFirmwareType);
       return;
    }
 

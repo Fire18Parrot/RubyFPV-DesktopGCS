@@ -2298,7 +2298,7 @@ bool Model::saveToFile(const char* filename, bool isOnController)
 
    if ( isOnController )
    {
-      sprintf(szBuff, FOLDER_VEHICLE_HISTORY, uVehicleId);
+      snprintf(szBuff, sizeof(szBuff)/sizeof(szBuff[0]), "%s", config_get_vehicle_history_folder(uVehicleId));
       sprintf(szComm, "mkdir -p %s", szBuff);
       hw_execute_bash_command_silent(szComm, NULL);
    }
@@ -2951,6 +2951,11 @@ void Model::generateUID()
    uVehicleId = rand();
    if ( BROADCAST_VEHICLE_ID == uVehicleId )
       uVehicleId = rand();
+   #if defined(HW_PLATFORM_RASPBERRY) || defined(HW_PLATFORM_RADXA) || defined(HW_PLATFORM_OPENIPC_CAMERA)
+   // On the embedded boards the device tree holds the serial number of the
+   // board. On a generic Linux desktop there is no device tree, so there is
+   // no serial number to read and it is not an error: the id is built from
+   // the other sources below.
    FILE* fd = fopen("/sys/firmware/devicetree/base/serial-number", "r");
    if ( NULL != fd )
    {
@@ -2968,6 +2973,7 @@ void Model::generateUID()
    }
    else
       log_softerror_and_alarm("Failed to get hardware serial number for generating unique vehicle id.");
+   #endif
 
    struct timespec t;
    clock_gettime(RUBY_HW_CLOCK_ID, &t);

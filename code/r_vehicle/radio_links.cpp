@@ -35,6 +35,7 @@
 #include "../base/hardware_radio_sik.h"
 #include "../base/hardware_radio_serial.h"
 #include "../base/ruby_ipc.h"
+#include "../base/radio_profiles.h"
 #include "../base/radio_utils.h"
 #include "../common/string_utils.h"
 #include "../common/radio_stats.h"
@@ -193,6 +194,24 @@ bool configure_radio_interfaces_for_current_model(Model* pModel, shared_mem_radi
          }
          else
          {
+            // The RF profile that is bound to this interface is applied to the
+            // hardware: the monitor mode, the frequency, the bandwidth and the
+            // TX power. The profile is applied only for a WiFi interface, the
+            // serial radios are configured by their own drivers.
+            {
+               radio_hw_info_t* pRadioHWInfo = hardware_get_radio_info(iInterface);
+               if ( (NULL != pRadioHWInfo) && hardware_radio_is_wifi_radio(pRadioHWInfo) )
+               {
+                  char szProfileError[512];
+                  szProfileError[0] = 0;
+                  int iProfileApplied = radio_profiles_apply_to_interface(iInterface, szProfileError, sizeof(szProfileError)/sizeof(szProfileError[0]));
+                  if ( 0 == iProfileApplied )
+                  {
+                     log_softerror_and_alarm("Failed to apply the RF profile of radio interface %d (%s): %s",
+                        iInterface+1, pRadioHWInfo->szName, szProfileError);
+                  }
+               }
+            }
             radio_utils_set_interface_frequency(pModel, iInterface, iLink, uRadioLinkFrequency, pProcessStats, 0);
             if ( NULL != pSMRadioStats )
                radio_stats_set_card_current_frequency(pSMRadioStats, iInterface, uRadioLinkFrequency);

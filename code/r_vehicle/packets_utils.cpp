@@ -141,14 +141,25 @@ void* _thread_set_tx_power_async(void *argument)
          if ( (NULL == pRadioHWInfo) || (! pRadioHWInfo->isConfigurable) )
             continue;
 
+         // The status of the command is checked: a command that produced no
+         // error text is not a proof that the TX power was applied.
+         int iPowerSet = 0;
          if ( hardware_radio_driver_is_rtl8812au_card(pRadioHWInfo->iRadioDriver) )
-            hardware_radio_set_txpower_raw_rtl8812au(iInterface, iRawPower);
-         if ( hardware_radio_driver_is_rtl8812eu_card(pRadioHWInfo->iRadioDriver) )
-            hardware_radio_set_txpower_raw_rtl8812eu(iInterface, iRawPower);
-         if ( hardware_radio_driver_is_rtl8733bu_card(pRadioHWInfo->iRadioDriver) )
-            hardware_radio_set_txpower_raw_rtl8733bu(iInterface, iRawPower);
-         if ( hardware_radio_driver_is_atheros_card(pRadioHWInfo->iRadioDriver) )
-            hardware_radio_set_txpower_raw_atheros(iInterface, iRawPower);
+            iPowerSet = hardware_radio_set_txpower_raw_rtl8812au(iInterface, iRawPower);
+         else if ( hardware_radio_driver_is_rtl8812eu_card(pRadioHWInfo->iRadioDriver) )
+            iPowerSet = hardware_radio_set_txpower_raw_rtl8812eu(iInterface, iRawPower);
+         else if ( hardware_radio_driver_is_rtl8733bu_card(pRadioHWInfo->iRadioDriver) )
+            iPowerSet = hardware_radio_set_txpower_raw_rtl8733bu(iInterface, iRawPower);
+         else if ( hardware_radio_driver_is_atheros_card(pRadioHWInfo->iRadioDriver) )
+            iPowerSet = hardware_radio_set_txpower_raw_atheros(iInterface, iRawPower);
+
+         if ( ! iPowerSet )
+         {
+            log_softerror_and_alarm("[ThreadTxPower] Failed to set the raw TX power %d of radio interface %d (%s).",
+               iRawPower, iInterface, pRadioHWInfo->szName);
+            // the power was not applied, the same value has to be retried
+            iLastRawTxPowerPerRadioInterface[iInterface] = 0;
+         }
       }
    }
    log_line("[ThreadTxPower] Thread ended.");

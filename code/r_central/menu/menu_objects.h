@@ -124,6 +124,7 @@
 #define MENU_ID_VEHICLE_VIDEO_COMPARE 137
 #define MENU_ID_QUICK_MENU_SETTINGS 138
 #define MENU_ID_QUICK_MENU 139
+#define MENU_ID_RF_PROFILES 140
 
 
 #define MAX_MENU_ITEMS 150
@@ -193,6 +194,11 @@ class Menu
      int addMenuItem(MenuItem* item);
      int insertMenuItem(MenuItem* pItem, int iPosition);
      int getSelectedMenuItemIndex();
+     // The number of the items of the menu and the item at an index. They
+     // are used by the tests, to drive a menu without a display.
+     int getItemsCount();
+     MenuItem* getMenuItem(int iIndex);
+     void setSelectedMenuItemIndex(int iIndex);
      void addSeparator();
      int addSection(const char* szSectionName);
      void enableMenuItem(int index, bool enable);

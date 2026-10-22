@@ -31,6 +31,7 @@
 */
 
 #include <ctype.h>
+#include <stdlib.h>
 #include <pthread.h>
 #include <sys/types.h>
 #include "../base/base.h"
@@ -53,6 +54,19 @@
 #define SIK_PARAM_INDEX_DUTYCYCLE 11
 #define SIK_PARAM_INDEX_LBT 12
 #define SIK_PARAM_INDEX_MCSTR 13
+
+
+// The SiK radio reports the frequency parameters (ATS8? and ATS9?) in Hz,
+// while the rest of the radio code uses kHz. A value that is large enough to
+// be a frequency in Hz is converted to kHz, a value that is already in kHz is
+// returned as it is. The conversion is used for every frequency parameter
+// that is read from the radio.
+static u32 _hardware_radio_sik_freq_to_khz(u32 uFreqRaw)
+{
+   if ( 1000000 < uFreqRaw )
+      return uFreqRaw / 1000;
+   return uFreqRaw;
+}
 
 
 radio_hw_info_t s_SiKRadioLastKnownInfo[MAX_RADIO_INTERFACES];
@@ -525,7 +539,8 @@ int _hardware_radio_sik_get_all_params(radio_hw_info_t* pRadioInfo, int iSerialP
 
       if ( hardware_radio_sik_send_command(iSerialPortFile, "ATS8?", bufferResponse, 255) )
       {
-         u32 uFreq = (u32)atoi((char*)bufferResponse);
+         // The radio reports the frequency in Hz, the thresholds are in kHz.
+         u32 uFreq = _hardware_radio_sik_freq_to_khz((u32)atoi((char*)bufferResponse));
          if ( uFreq < 500000 )
             strcat(szMAC, "433");
          else if ( uFreq < 890000 )
@@ -554,6 +569,10 @@ int _hardware_radio_sik_get_all_params(radio_hw_info_t* pRadioInfo, int iSerialP
       sprintf(szComm, "ATS%d?", i);
       if ( hardware_radio_sik_send_command(iSerialPortFile, szComm, bufferResponse, 255) )
       {
+         // The value is stored exactly as the radio reported it. The frequency
+         // parameters are normalized only where they are compared against the
+         // kHz thresholds of the band detection, so the write path keeps
+         // sending the values in the unit it always used.
          pRadioInfo->uHardwareParamsList[i] = atoi((char*)bufferResponse);
       }
       else
@@ -591,10 +610,112 @@ int _hardware_radio_sik_get_all_params(radio_hw_info_t* pRadioInfo, int iSerialP
    return 1;
 }
 
+// Adds a device to the list of the candidate devices, if it is not already
+// in the list. The devices that are the same device (ex: a /dev/serial/by-id
+// symlink and the /dev/ttyUSB node it points to) are added only once, the
+// comparison is done on the resolved path.
+static void _hardware_radio_sik_add_candidate_device(char szDevices[][MAX_SERIAL_PORT_NAME], int* piCount, int iMaxDevices, const char* szDevice)
+{
+   if ( (NULL == szDevice) || (0 == szDevice[0]) )
+      return;
+   if ( *piCount >= iMaxDevices )
+      return;
+
+   char szResolved[MAX_SERIAL_PORT_NAME];
+   szResolved[0] = 0;
+   if ( NULL == realpath(szDevice, szResolved) )
+      snprintf(szResolved, sizeof(szResolved)/sizeof(szResolved[0]), "%s", szDevice);
+
+   for( int i=0; i<*piCount; i++ )
+   {
+      char szOther[MAX_SERIAL_PORT_NAME];
+      szOther[0] = 0;
+      if ( NULL == realpath(szDevices[i], szOther) )
+         snprintf(szOther, sizeof(szOther)/sizeof(szOther[0]), "%s", szDevices[i]);
+      if ( 0 == strcmp(szResolved, szOther) )
+         return;
+   }
+
+   snprintf(szDevices[*piCount], MAX_SERIAL_PORT_NAME, "%s", szDevice);
+   (*piCount)++;
+}
+
+// Builds the list of the serial devices that could host a SiK radio.
+//
+// On the embedded platforms the list is the fixed one, the USB serial ports
+// of the board. On a generic Linux desktop the radio can be on any USB serial
+// device (a ttyUSB one or a CDC-ACM one) and it can be behind a
+// /dev/serial/by-id symlink, so the list is built from the enumerated serial
+// ports and from the by-id symlinks. The devices that are already used for
+// something else (a flight controller on the telemetry port, a core plugin)
+// are not probed, so that the AT commands are not sent to them.
+//
+// The environment variable RUBY_SIK_PORTS overrides the list, it accepts a
+// list of device paths separated by ':'. It is the way to point the
+// application to a radio that is not detected by the enumeration.
+static int _hardware_radio_sik_get_candidate_devices(char szDevices[][MAX_SERIAL_PORT_NAME], int iMaxDevices)
+{
+   int iCount = 0;
+
+   const char* szOverride = getenv("RUBY_SIK_PORTS");
+   if ( (NULL != szOverride) && (0 != szOverride[0]) )
+   {
+      char szList[1024];
+      snprintf(szList, sizeof(szList)/sizeof(szList[0]), "%s", szOverride);
+      char* pSave = NULL;
+      for( char* pToken = strtok_r(szList, ":", &pSave); NULL != pToken; pToken = strtok_r(NULL, ":", &pSave) )
+      {
+         log_line("[HW-RSK]: Using the device [%s] from the RUBY_SIK_PORTS environment variable.", pToken);
+         _hardware_radio_sik_add_candidate_device(szDevices, &iCount, iMaxDevices, pToken);
+      }
+      return iCount;
+   }
+
+   #ifdef HW_PLATFORM_LINUX_GENERIC
+   int iPortsCount = hardware_serial_get_ports_count();
+   for( int i=0; i<iPortsCount; i++ )
+   {
+      hw_serial_port_info_t* pPort = hardware_get_serial_port_info(i);
+      if ( NULL == pPort )
+         continue;
+      if ( 0 == pPort->szPortDeviceName[0] )
+         continue;
+      // The ports that are used for something else are not probed
+      if ( (SERIAL_PORT_USAGE_TELEMETRY == pPort->iPortUsage) ||
+           (SERIAL_PORT_USAGE_DATA_LINK == pPort->iPortUsage) ||
+           (SERIAL_PORT_USAGE_CORE_PLUGIN == pPort->iPortUsage) )
+         continue;
+      _hardware_radio_sik_add_candidate_device(szDevices, &iCount, iMaxDevices, pPort->szPortDeviceName);
+   }
+
+   // The by-id symlinks are the stable names of the USB serial devices, they
+   // are added as well, so that a radio that is not exposed as a ttyUSB or a
+   // ttyACM node is found too.
+   char szOutput[4096];
+   szOutput[0] = 0;
+   hw_execute_bash_command_raw_silent("ls /dev/serial/by-id/ 2>/dev/null", szOutput);
+   char* pSave = NULL;
+   for( char* pToken = strtok_r(szOutput, " \t\r\n", &pSave); NULL != pToken; pToken = strtok_r(NULL, " \t\r\n", &pSave) )
+   {
+      char szPath[512];
+      snprintf(szPath, sizeof(szPath)/sizeof(szPath[0]), "/dev/serial/by-id/%s", pToken);
+      if ( access(szPath, R_OK) == -1 )
+         continue;
+      _hardware_radio_sik_add_candidate_device(szDevices, &iCount, iMaxDevices, szPath);
+   }
+   #else
+   _hardware_radio_sik_add_candidate_device(szDevices, &iCount, iMaxDevices, "/dev/ttyUSB0");
+   _hardware_radio_sik_add_candidate_device(szDevices, &iCount, iMaxDevices, "/dev/ttyUSB1");
+   _hardware_radio_sik_add_candidate_device(szDevices, &iCount, iMaxDevices, "/dev/ttyUSB2");
+   #endif
+
+   return iCount;
+}
+
 int hardware_radio_sik_detect_interfaces()
 {
    log_line("[HW-RSK]: Enumerating Sik radios...");
-   
+
    s_iSiKRadioCount = 0;
    s_iSiKRadioLastKnownCount = 0;
 
@@ -602,25 +723,19 @@ int hardware_radio_sik_detect_interfaces()
 
    s_iSiKRadioCount = 0;
 
-   radio_hw_info_t* pRadioInfo = hardware_radio_sik_try_detect_on_port("ttyUSB0");
-   if ( (NULL != pRadioInfo) && ( hardware_get_radio_interfaces_count() < MAX_RADIO_INTERFACES ) )
-   {
-      pRadioInfo->phy_index = 0;
-      strcpy(pRadioInfo->szUSBPort, "TU-0");
-      hardware_add_radio_interface_info(pRadioInfo);
-   }
+   char szDevices[MAX_SERIAL_PORTS][MAX_SERIAL_PORT_NAME];
+   int iDevicesCount = _hardware_radio_sik_get_candidate_devices(szDevices, MAX_SERIAL_PORTS);
+   log_line("[HW-RSK]: Probing %d candidate serial devices for a SiK radio.", iDevicesCount);
 
-   pRadioInfo = hardware_radio_sik_try_detect_on_port("ttyUSB1");
-   if ( (NULL != pRadioInfo) && ( hardware_get_radio_interfaces_count() < MAX_RADIO_INTERFACES ) )
+   for( int i=0; i<iDevicesCount; i++ )
    {
-      pRadioInfo->phy_index = 0;
-      strcpy(pRadioInfo->szUSBPort, "TU-0");
-      hardware_add_radio_interface_info(pRadioInfo);
-   }
+      if ( hardware_get_radio_interfaces_count() >= MAX_RADIO_INTERFACES )
+         break;
 
-   pRadioInfo = hardware_radio_sik_try_detect_on_port("ttyUSB2");
-   if ( (NULL != pRadioInfo) && ( hardware_get_radio_interfaces_count() < MAX_RADIO_INTERFACES ) )
-   {
+      radio_hw_info_t* pRadioInfo = hardware_radio_sik_try_detect_on_port(szDevices[i]);
+      if ( NULL == pRadioInfo )
+         continue;
+
       pRadioInfo->phy_index = 0;
       strcpy(pRadioInfo->szUSBPort, "TU-0");
       hardware_add_radio_interface_info(pRadioInfo);
@@ -629,7 +744,7 @@ int hardware_radio_sik_detect_interfaces()
    s_iSiKRadioCount = 0;
    for( int i=0; i<hardware_get_radio_interfaces_count(); i++ )
    {
-      pRadioInfo = hardware_get_radio_info(i);
+      radio_hw_info_t* pRadioInfo = hardware_get_radio_info(i);
       if ( (NULL == pRadioInfo) || (pRadioInfo->iRadioType != RADIO_TYPE_SIK) )
          continue;
       s_iSiKRadioCount++;
@@ -888,24 +1003,33 @@ radio_hw_info_t* hardware_radio_sik_try_detect_on_port(const char* szSerialPort)
       strcpy(s_radioHWInfoSikTemp.szDriver, szDevName);
       sprintf(s_radioHWInfoSikTemp.szProductId, "%u", s_radioHWInfoSikTemp.uHardwareParamsList[0]);
       
-      s_radioHWInfoSikTemp.uCurrentFrequencyKhz = s_radioHWInfoSikTemp.uHardwareParamsList[SIK_PARAM_INDEX_FREQ_MIN];
-      if ( s_radioHWInfoSikTemp.uHardwareParamsList[SIK_PARAM_INDEX_FREQ_MIN] >= 400000 )
-      if ( s_radioHWInfoSikTemp.uHardwareParamsList[SIK_PARAM_INDEX_FREQ_MAX] <= 460000 )
-         s_radioHWInfoSikTemp.supportedBands = RADIO_HW_SUPPORTED_BAND_433;
+      // The SiK radio reports the frequency parameters in Hz, while the rest
+      // of the radio code uses kHz. The values are normalized here, otherwise
+      // the band detection compares Hz against kHz thresholds and the radio
+      // never reports a supported band.
+      u32 uFreqMinKhz = _hardware_radio_sik_freq_to_khz(s_radioHWInfoSikTemp.uHardwareParamsList[SIK_PARAM_INDEX_FREQ_MIN]);
+      u32 uFreqMaxKhz = _hardware_radio_sik_freq_to_khz(s_radioHWInfoSikTemp.uHardwareParamsList[SIK_PARAM_INDEX_FREQ_MAX]);
 
-      if ( s_radioHWInfoSikTemp.uHardwareParamsList[SIK_PARAM_INDEX_FREQ_MIN] >= 800000 )
-      if ( s_radioHWInfoSikTemp.uHardwareParamsList[SIK_PARAM_INDEX_FREQ_MAX] <= 890000 )
-         s_radioHWInfoSikTemp.supportedBands = RADIO_HW_SUPPORTED_BAND_868;
+      s_radioHWInfoSikTemp.uCurrentFrequencyKhz = uFreqMinKhz;
 
-      if ( s_radioHWInfoSikTemp.uHardwareParamsList[SIK_PARAM_INDEX_FREQ_MIN] >= 891000 )
-      if ( s_radioHWInfoSikTemp.uHardwareParamsList[SIK_PARAM_INDEX_FREQ_MAX] <= 950000 )
-         s_radioHWInfoSikTemp.supportedBands = RADIO_HW_SUPPORTED_BAND_915;
+      if ( 400000 <= uFreqMinKhz )
+      if ( uFreqMaxKhz <= 460000 )
+         s_radioHWInfoSikTemp.supportedBands |= RADIO_HW_SUPPORTED_BAND_433;
+
+      if ( 800000 <= uFreqMinKhz )
+      if ( uFreqMaxKhz <= 890000 )
+         s_radioHWInfoSikTemp.supportedBands |= RADIO_HW_SUPPORTED_BAND_868;
+
+      if ( 891000 <= uFreqMinKhz )
+      if ( uFreqMaxKhz <= 950000 )
+         s_radioHWInfoSikTemp.supportedBands |= RADIO_HW_SUPPORTED_BAND_915;
 
 
       // Mark the serial port as used for a hardware radio interface
 
       log_line("[HW-RSK]: Mark serial device [%s] as used for a radio interface.", szDevName);
-      
+
+      bool bPortFound = false;
       for( int k=0; k<hardware_serial_get_ports_count(); k++ )
       {
          hw_serial_port_info_t* pSerial = hardware_get_serial_port_info(k);
@@ -917,8 +1041,20 @@ radio_hw_info_t* hardware_radio_sik_try_detect_on_port(const char* szSerialPort)
             pSerial->lPortSpeed = iSpeed;
             pSerial->iSupported = 1;
             hardware_serial_save_configuration();
+            bPortFound = true;
             break;
          }
+      }
+
+      if ( ! bPortFound )
+      {
+         // The radio is on a device that was not part of the serial ports
+         // enumeration, ex: a /dev/serial/by-id symlink. The device is added
+         // to the serial ports, so that it is visible in the settings and so
+         // that the radio can be opened later.
+         int iPortIndex = hardware_serial_add_port(szDevName, "SiK-Radio", iSpeed, SERIAL_PORT_USAGE_SIK_RADIO);
+         if ( iPortIndex >= 0 )
+            hardware_serial_save_configuration();
       }
       return &s_radioHWInfoSikTemp;
    }
@@ -1338,7 +1474,7 @@ int hardware_radio_sik_set_frequency(radio_hw_info_t* pRadioInfo, u32 uFrequency
       return 0;
    
    if ( uFrequencyKhz == 0 )
-      uFrequencyKhz = pRadioInfo->uHardwareParamsList[SIK_PARAM_INDEX_FREQ_MIN];
+      uFrequencyKhz = _hardware_radio_sik_freq_to_khz(pRadioInfo->uHardwareParamsList[SIK_PARAM_INDEX_FREQ_MIN]);
    
    int iRes = hardware_radio_sik_set_params(pRadioInfo, 
        uFrequencyKhz,
@@ -1647,17 +1783,30 @@ int hardware_radio_sik_open_for_read_write(int iHWRadioInterfaceIndex)
    }
 
    hw_serial_port_info_t* pSerialPort = hardware_get_serial_port_info_from_serial_port_name(pRadioInfo->szDriver);
-  
-   if ( NULL == pSerialPort )
+
+   long lPortSpeed = 0;
+   if ( NULL != pSerialPort )
    {
-      log_error_and_alarm("[HW-RSK] Open: Failed to find serial port configuration for SiK radio %s.", pRadioInfo->szDriver);
-      return 0;
+      lPortSpeed = pSerialPort->lPortSpeed;
+   }
+   else
+   {
+      // The device of the radio is not in the serial ports configuration. That
+      // happens when the radio is on a device that was not part of the
+      // enumeration, ex: a /dev/serial/by-id symlink. The radio is opened
+      // anyway, at the speed that the radio reported when it was detected.
+      lPortSpeed = hardware_radio_sik_get_real_serial_baudrate(pRadioInfo->uHardwareParamsList[SIK_PARAM_INDEX_AIRSPEED]);
+      if ( lPortSpeed <= 0 )
+         lPortSpeed = DEFAULT_FC_TELEMETRY_SERIAL_SPEED;
+      log_line("[HW-RSK] Open: The serial port %s is not in the serial ports configuration, opening it at %ld bps.",
+         pRadioInfo->szDriver, lPortSpeed);
+      hardware_serial_add_port(pRadioInfo->szDriver, "SiK-Radio", lPortSpeed, SERIAL_PORT_USAGE_SIK_RADIO);
    }
 
-   int iSerialPortFD = hardware_open_serial_port(pRadioInfo->szDriver, pSerialPort->lPortSpeed);
+   int iSerialPortFD = hardware_open_serial_port(pRadioInfo->szDriver, lPortSpeed);
    if ( iSerialPortFD <= 0 )
    {
-      log_error_and_alarm("[HW-RSK] Open: Failed to open serial port for SiK radio %s at %ld bps.", pRadioInfo->szDriver, pSerialPort->lPortSpeed);
+      log_error_and_alarm("[HW-RSK] Open: Failed to open serial port for SiK radio %s at %ld bps.", pRadioInfo->szDriver, lPortSpeed);
       return 0;
    }
    pRadioInfo->openedForWrite = 1;

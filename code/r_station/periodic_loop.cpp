@@ -219,7 +219,7 @@ void _check_send_pairing_requests()
          continue;
       if ( pModel->is_spectator )
          continue;
-      if ( pModel->getVehicleFirmwareType() != MODEL_FIRMWARE_TYPE_RUBY )
+      if ( pModel->getVehicleFirmwareType() != MODEL_FIRMWARE_TYPE_RUBY && pModel->getVehicleFirmwareType() != MODEL_FIRMWARE_TYPE_OPENIPC )
          continue;
 
       bool bExpectedVehicle = false;
@@ -291,7 +291,7 @@ int _must_inject_ping_now()
    if ( g_bSearching || (NULL == g_pCurrentModel) || g_pCurrentModel->is_spectator || g_pCurrentModel->b_mustSyncFromVehicle )
       return 0;
 
-   if ( g_pCurrentModel->getVehicleFirmwareType() != MODEL_FIRMWARE_TYPE_RUBY )
+   if ( g_pCurrentModel->getVehicleFirmwareType() != MODEL_FIRMWARE_TYPE_RUBY && g_pCurrentModel->getVehicleFirmwareType() != MODEL_FIRMWARE_TYPE_OPENIPC )
       return 0;
 
    if ( g_pCurrentModel->radioLinksParams.uGlobalRadioLinksFlags & MODEL_RADIOLINKS_FLAGS_DOWNLINK_ONLY )

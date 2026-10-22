@@ -121,7 +121,7 @@ void _hardware_enumerate_serial_ports()
       s_HardwareSerialPortsInfo[s_iCountHardwareSerialPorts].iSupported = 1;
       sprintf(szBuff, "ls /dev/serial/by-id/ -al | grep ttyUSB%d", i);
       hw_execute_bash_command_raw_silent(szBuff, szOutput);
-   
+
       if ( NULL != strstr(szOutput, "CP2102") )
          s_HardwareSerialPortsInfo[s_iCountHardwareSerialPorts].iSupported = 1;
       else if ( NULL != strstr(szOutput, "HL-340") )
@@ -133,10 +133,92 @@ void _hardware_enumerate_serial_ports()
             s_HardwareSerialPortsInfo[s_iCountHardwareSerialPorts].iSupported = 0;
       }
 
+      #ifdef HW_PLATFORM_LINUX_GENERIC
+      // On a generic Linux desktop the CH340/HL-340 adapters are not
+      // conflicting with anything: they are the usual USB serial adapters of
+      // the ELRS and SiK radios. They are not disabled here, the radio
+      // detection is the one that decides if a device is a radio or not.
+      s_HardwareSerialPortsInfo[s_iCountHardwareSerialPorts].iSupported = 1;
+      #endif
+
       s_HardwareSerialPortsInfo[s_iCountHardwareSerialPorts].lPortSpeed = DEFAULT_FC_TELEMETRY_SERIAL_SPEED;
       s_HardwareSerialPortsInfo[s_iCountHardwareSerialPorts].iPortUsage = SERIAL_PORT_USAGE_NONE;
       s_iCountHardwareSerialPorts++;
    }
+
+   #ifdef HW_PLATFORM_LINUX_GENERIC
+   // On a generic Linux desktop the USB serial devices are not limited to the
+   // ttyUSB ones: a radio that is exposed as a CDC-ACM device (ttyACM) is a
+   // radio as well. The devices are enumerated here, so they are visible in
+   // the settings and so the radio detection can probe them.
+   for( int i=0; i<MAX_SERIAL_PORTS-4; i++ )
+   {
+      char szBuff[128];
+      sprintf(szBuff, "/dev/ttyACM%d", i);
+      if( access( szBuff, R_OK ) == -1 )
+         continue;
+      if ( s_iCountHardwareSerialPorts >= MAX_SERIAL_PORTS )
+         continue;
+
+      sprintf(s_HardwareSerialPortsInfo[s_iCountHardwareSerialPorts].szName, "Serial-ACM%d",i);
+      strcpy(s_HardwareSerialPortsInfo[s_iCountHardwareSerialPorts].szPortDeviceName, szBuff);
+      s_HardwareSerialPortsInfo[s_iCountHardwareSerialPorts].iSupported = 1;
+      s_HardwareSerialPortsInfo[s_iCountHardwareSerialPorts].lPortSpeed = DEFAULT_FC_TELEMETRY_SERIAL_SPEED;
+      s_HardwareSerialPortsInfo[s_iCountHardwareSerialPorts].iPortUsage = SERIAL_PORT_USAGE_NONE;
+      s_iCountHardwareSerialPorts++;
+   }
+   #endif
+}
+
+// Adds a serial port to the list of the hardware serial ports.
+// It is used for the devices that are found at runtime and that were not part
+// of the enumeration, ex: a radio that is connected to a device node that is
+// not a /dev/ttyUSB or a /dev/ttyACM one.
+// Returns the index of the added port, or -1 if the port could not be added.
+int hardware_serial_add_port(const char* szDeviceName, const char* szName, long lSpeed, int iUsage)
+{
+   if ( (NULL == szDeviceName) || (0 == szDeviceName[0]) )
+      return -1;
+
+   if ( ! s_iHardwareSerialPortsWasInitialized )
+      hardware_serial_init_ports();
+
+   for( int i=0; i<s_iCountHardwareSerialPorts; i++ )
+   {
+      if ( 0 == strcmp(szDeviceName, s_HardwareSerialPortsInfo[i].szPortDeviceName) )
+         return i;
+   }
+
+   if ( s_iCountHardwareSerialPorts >= MAX_SERIAL_PORTS )
+   {
+      log_softerror_and_alarm("[HW-S] Can't add the serial port %s, the maximum number of serial ports was reached.", szDeviceName);
+      return -1;
+   }
+
+   int iIndex = s_iCountHardwareSerialPorts;
+   memset(&s_HardwareSerialPortsInfo[iIndex], 0, sizeof(hw_serial_port_info_t));
+   if ( (NULL != szName) && (0 != szName[0]) )
+      snprintf(s_HardwareSerialPortsInfo[iIndex].szName, MAX_SERIAL_PORT_NAME, "%s", szName);
+   else
+      snprintf(s_HardwareSerialPortsInfo[iIndex].szName, MAX_SERIAL_PORT_NAME, "Serial-%d", iIndex);
+   snprintf(s_HardwareSerialPortsInfo[iIndex].szPortDeviceName, MAX_SERIAL_PORT_NAME, "%s", szDeviceName);
+   s_HardwareSerialPortsInfo[iIndex].iSupported = 1;
+   s_HardwareSerialPortsInfo[iIndex].lPortSpeed = (lSpeed > 0) ? lSpeed : DEFAULT_FC_TELEMETRY_SERIAL_SPEED;
+   s_HardwareSerialPortsInfo[iIndex].iPortUsage = iUsage;
+   s_iCountHardwareSerialPorts++;
+
+   // The port is added to the settings list too, otherwise it would not be
+   // saved: only the ports of the settings list are written to the
+   // configuration file.
+   if ( s_iCountLoadedSerialPorts < MAX_SERIAL_PORTS )
+   {
+      memcpy(&(s_LoadedSerialPortsInfo[s_iCountLoadedSerialPorts]), &(s_HardwareSerialPortsInfo[iIndex]), sizeof(hw_serial_port_info_t));
+      s_iCountLoadedSerialPorts++;
+   }
+
+   log_line("[HW-S] Added the serial port %s (%s) at %ld bps.", s_HardwareSerialPortsInfo[iIndex].szPortDeviceName,
+      s_HardwareSerialPortsInfo[iIndex].szName, s_HardwareSerialPortsInfo[iIndex].lPortSpeed);
+   return iIndex;
 }
 
 int hardware_serial_init_ports()

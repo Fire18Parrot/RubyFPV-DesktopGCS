@@ -99,8 +99,12 @@ void start_pipes_to_router()
    if ( -1 == s_fIPCToRouter )
    {
       s_fIPCToRouter = ruby_open_ipc_channel_write_endpoint(IPC_CHANNEL_TYPE_CENTRAL_TO_ROUTER);
-      if ( s_fIPCToRouter < 0 )
+      // The channel unique ids start at 1 and the failure sentinel is -1.
+      if ( s_fIPCToRouter <= 0 )
+      {
+         s_fIPCToRouter = -1;
          return;
+      }
    }
    else
       log_line("[Router COMM] Already has IPC write endpoint to router.");
@@ -108,8 +112,11 @@ void start_pipes_to_router()
    if ( -1 == s_fIPCFromRouter )
    {
       s_fIPCFromRouter = ruby_open_ipc_channel_read_endpoint(IPC_CHANNEL_TYPE_ROUTER_TO_CENTRAL);
-      if ( s_fIPCFromRouter < 0 )
+      if ( s_fIPCFromRouter <= 0 )
+      {
+         s_fIPCFromRouter = -1;
          return;
+      }
    }
    else
       log_line("[Router COMM] Already has IPC read endpoint from router.");

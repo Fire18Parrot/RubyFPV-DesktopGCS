@@ -43,6 +43,10 @@
 #include "render_engine_cairo.h"
 #endif
 
+#if defined (HW_PLATFORM_LINUX_GENERIC)
+#include "render_engine_desktop.h"
+#endif
+
 #include "../base/base.h"
 #include "../base/hardware.h"
 
@@ -62,9 +66,23 @@ RenderEngine* render_init_engine()
       s_bRenderEngineSupportsRawFonts = true;
       s_pRenderEngine = new RenderEngineCairo();
       #endif
+      #if defined (HW_PLATFORM_LINUX_GENERIC)
+      s_bRenderEngineSupportsRawFonts = true;
+      s_pRenderEngine = new RenderEngineDesktop();
+      #endif
 
+      // If the engine could not be initialized (no window, no draw context),
+      // it is destroyed and NULL is returned. A half-initialized engine would
+      // crash the first time it is used, because the draw context is NULL.
       if (NULL != s_pRenderEngine )
-         s_pRenderEngine->initEngine();
+      {
+         if ( ! s_pRenderEngine->initEngine() )
+         {
+            log_error_and_alarm("[RenderEngine] Failed to initialize the render engine.");
+            delete s_pRenderEngine;
+            s_pRenderEngine = NULL;
+         }
+      }
    }
    return s_pRenderEngine;
 }
@@ -505,6 +523,15 @@ int RenderEngine::loadRawFont(int iFamilyId, const char* szFontFile, int iBold)
       return -3;
    }
    m_pRawFonts[m_iCountRawFonts] = (RenderEngineRawFont*) malloc(sizeof(RenderEngineRawFont));
+   if ( NULL == m_pRawFonts[m_iCountRawFonts] )
+   {
+      log_error_and_alarm("[RenderEngineRaw] Can't allocate memory for font (%s).", szFontFile);
+      return -4;
+   }
+   // The kerning table is not loaded (the .dsc kerning section is optional and
+   // currently not parsed), so it must be zeroed here: otherwise the counter
+   // is read uninitialized when the font is logged.
+   memset(m_pRawFonts[m_iCountRawFonts], 0, sizeof(RenderEngineRawFont));
    m_pRawFonts[m_iCountRawFonts]->iFamilyId = iFamilyId;
    m_pRawFonts[m_iCountRawFonts]->bBold = (iBold?true:false);
    strncpy(m_pRawFonts[m_iCountRawFonts]->szName, szFontFile, 127);
@@ -689,8 +716,11 @@ void RenderEngine::endFrame()
    if ( ! m_bStartedFrame )
       return;
 
-   m_bStartedFrame = false;
-   m_iRenderDepth--;
+   m_bStartedFrame = false;   m_iRenderDepth--;
+}
+
+void RenderEngine::pollEvents()
+{
 }
 
 bool RenderEngine::isFrameStarted()

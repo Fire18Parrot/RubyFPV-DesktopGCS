@@ -26,6 +26,7 @@ class MenuSearch: public Menu
       bool search_finished_with_no_results;
       int m_SearchBandIndex;
       int m_iSearchModelTypes;
+      int m_SearchFirmwareType;
       bool m_bIsSearchPaused;
       bool m_SpectatorOnlyMode;
       bool m_bIsSearchingSiK;
@@ -41,6 +42,7 @@ class MenuSearch: public Menu
       u32 m_CurrentSearchFrequencyKhz;
 
       MenuItemSelect* m_pItemSelectBand;
+      MenuItemSelect* m_pItemSelectFirmware;
       MenuItemSelect* m_pItemsSelectFreq;
       Popup* m_pPopupSearch;
 
@@ -54,6 +56,7 @@ class MenuSearch: public Menu
       u32 m_uSiKBands;
 
       int m_IndexBand;
+      int m_IndexFirmware;
       int m_IndexModelTypes;
       int m_IndexStartSearch;
       int m_IndexManualSearch;

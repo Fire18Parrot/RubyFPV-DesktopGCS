@@ -46,6 +46,10 @@
 #include "hardware.h"
 #include "gpio.h"
 #include "config.h"
+#if defined(HW_PLATFORM_LINUX_GENERIC)
+#include <sys/prctl.h>
+#include <linux/capability.h>
+#endif
 #include "hardware_procs.h"
 #include "hardware_camera.h"
 #include "hardware_files.h"
@@ -160,6 +164,11 @@ void _hardware_detectSystemType()
 
    log_line("[Hardware] Do full detection of board and system type...");
    hw_execute_bash_command_raw("cat /proc/device-tree/model", szBuff);
+#ifdef HW_PLATFORM_LINUX_GENERIC
+   // The device tree is not available on a normal desktop computer.
+   if ( strlen(szBuff) < 2 )
+      snprintf(szBuff, sizeof(szBuff)/sizeof(szBuff[0]), "%s desktop build", SYSTEM_NAME);
+#endif
    log_line("[Hardware] Board description string: %s", szBuff);
 
    s_uHardwareBoardType = hardware_getBoardType();
@@ -496,6 +505,15 @@ int init_hardware_only_detection_pins()
 
 void hardware_reboot()
 {
+   #if defined(HW_PLATFORM_LINUX_GENERIC)
+   // On a generic Linux desktop the application does not reboot the machine:
+   // the desktop is not managed by this application and a reboot would
+   // interrupt everything that is running on it. The restart of the
+   // application is done by starting it again.
+   log_error_and_alarm("[Hardware] Reboot requested, but the machine is not rebooted (generic Linux platform).");
+   return;
+   #endif
+
    log_line("[Hardware] Entered reboot sequence...");
    hardware_sleep_ms(200);
    hw_execute_bash_command("sync", NULL);
@@ -781,7 +799,7 @@ void hardware_detectBoardAndSystemType()
 {
    if ( ! s_bHarwareHasDetectedSystemType )
       _hardware_detectSystemType();
-   
+
    if ( s_iHardwareSystemIsVehicle )
    {
       if ( 0 == hardware_hasCamera() )
@@ -791,6 +809,70 @@ void hardware_detectBoardAndSystemType()
    }
    else
       log_line("[Hardware] Detected system as controller.");
+}
+
+// The ground station configures the radio interfaces by running helper
+// programs (iw, for example). Those helpers are ordinary programs, without
+// file capabilities, so they lose the privileges of this process when they
+// are executed: the radio interfaces could not be tuned at all.
+//
+// To give them the privileges that this process has, the capabilities are
+// raised as ambient: the ambient capabilities are kept when a non privileged
+// program is executed, so the children inherit them.
+//
+// A capability can be raised as ambient only if it is in the permitted set
+// and in the inheritable set. The file capabilities of this program are
+// added to the inheritable set by the kernel, so the capabilities that were
+// installed on this binary can be raised as ambient.
+void hardware_raise_ambient_capabilities()
+{
+   #if defined(HW_PLATFORM_LINUX_GENERIC)
+   unsigned long long uPermitted = 0;
+   unsigned long long uInheritable = 0;
+
+   FILE* fd = fopen("/proc/self/status", "r");
+   if ( NULL == fd )
+   {
+      log_softerror_and_alarm("[Hardware] Could not read /proc/self/status: the helper processes will not inherit the privileges of this process.");
+      return;
+   }
+   char szLine[256];
+   while ( NULL != fgets(szLine, sizeof(szLine)/sizeof(szLine[0]), fd) )
+   {
+      if ( 0 == strncmp(szLine, "CapPrm:", 7) )
+         sscanf(szLine+7, "%llx", (unsigned long long*)&uPermitted);
+      if ( 0 == strncmp(szLine, "CapInh:", 7) )
+         sscanf(szLine+7, "%llx", (unsigned long long*)&uInheritable);
+   }
+   fclose(fd);
+
+   int iRaisedCount = 0;
+   for ( int i=0; i<CAP_LAST_CAP; i++ )
+   {
+      unsigned long long uMask = ((unsigned long long)1) << i;
+      if ( 0 == (uPermitted & uMask) )
+         continue;
+      if ( 0 == (uInheritable & uMask) )
+         continue;
+      // The capability number is passed to the kernel by value, as the third
+      // argument of prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, capability):
+      // this is the call that libcap makes and the only one that the kernel
+      // honours. The call returns EINVAL if the capability is already raised
+      // as ambient, and EPERM if the capability is not in the permitted set
+      // and in the inheritable set.
+      errno = 0;
+      if ( 0 == prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, (unsigned long)i, 0, 0) )
+         iRaisedCount++;
+      else if ( EINVAL == errno )
+         iRaisedCount++; // it was already raised as ambient
+      else
+         log_softerror_and_alarm("[Hardware] Could not raise the capability %d as ambient (error: %d). The helper processes will not inherit it.", i, errno);
+   }
+   if ( iRaisedCount > 0 )
+      log_line("[Hardware] %d capabilities raised as ambient: the helper processes (iw) inherit them.", iRaisedCount);
+   else
+      log_line("[Hardware] No capability could be raised as ambient: this process has no privilege to pass to the helper processes.");
+   #endif
 }
 
 void hardware_writeBoardAndSystemType()

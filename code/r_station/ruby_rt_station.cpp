@@ -48,6 +48,7 @@
 #include "../base/hardware_files.h"
 #include "../base/hardware_procs.h"
 #include "../base/ruby_ipc.h"
+#include "../base/radio_profiles.h"
 #include "../base/parse_fc_telemetry.h"
 #include "../base/utils.h"
 #include "../common/string_utils.h"
@@ -677,9 +678,23 @@ int open_pipes()
    if ( g_fIPCToCentral < 0 )
       return -1;
    
-   g_fIPCToTelemetry = ruby_open_ipc_channel_write_endpoint(IPC_CHANNEL_TYPE_ROUTER_TO_TELEMETRY);
-   if ( g_fIPCToTelemetry < 0 )
-      return -1;
+   // The telemetry process (ruby_rx_telemetry) is started by the ground
+   // station only when the ground station has a serial radio: it decodes the
+   // telemetry that arrives on a serial radio link.
+   // When there is no serial radio, nobody reads the messages of this channel:
+   // writing to it would fill it up and every write would fail, slowing down
+   // the main loop of the router.
+   if ( hardware_radio_has_serial_radios() )
+   {
+      g_fIPCToTelemetry = ruby_open_ipc_channel_write_endpoint(IPC_CHANNEL_TYPE_ROUTER_TO_TELEMETRY);
+      if ( g_fIPCToTelemetry < 0 )
+         return -1;
+   }
+   else
+   {
+      g_fIPCToTelemetry = -1;
+      log_line("No serial radio: the telemetry channel is not used by the router.");
+   }
    
    g_fIPCFromTelemetry = ruby_open_ipc_channel_read_endpoint(IPC_CHANNEL_TYPE_TELEMETRY_TO_ROUTER);
    if ( g_fIPCFromTelemetry < 0 )
@@ -805,6 +820,10 @@ int main(int argc, char *argv[])
    
    hardware_detectBoardAndSystemType();
 
+   // The router runs helper programs (iw) to configure the radio interfaces:
+   // they must inherit the privileges of this process.
+   hardware_raise_ambient_capabilities();
+
    g_bSearching = false;
    g_uSearchFrequency = 0;
    if ( argc >= 3 )
@@ -858,6 +877,15 @@ int main(int argc, char *argv[])
    radio_enable_crc_gen(1);
    hardware_enumerate_radio_interfaces(); 
 
+   // The RF profiles are stored by the central user interface, the station
+   // reads them and applies them to the radio interfaces when the radio
+   // links are opened.
+   radio_profiles_init();
+   if ( ! radio_profiles_load() )
+      log_line("No RF profiles were loaded, the radio interfaces are configured by the radio links only.");
+   else
+      log_line("Loaded %d RF profile(s).", radio_profiles_get_count());
+
    init_radio_rx_structures();
    reset_sik_state_info(&g_SiKRadiosState);
 
@@ -899,6 +927,14 @@ int main(int argc, char *argv[])
       loadAllModels();
 
       g_pCurrentModel = getCurrentModel();
+      if ( NULL == g_pCurrentModel )
+      {
+         // Outside the search mode the router works for one vehicle: without
+         // a selected vehicle there is nothing to work for. The search mode
+         // does not need a model, that is why this is only checked here.
+         log_error_and_alarm("No vehicle is selected. The router cannot be started.");
+         return -1;
+      }
       if ( g_pCurrentModel->enc_flags != MODEL_ENC_FLAGS_NONE )
          lpp(NULL, 0);
       g_pCurrentModel->logVehicleRadioInfo();
@@ -1168,6 +1204,11 @@ void video_processors_init()
       #endif
       #ifdef HW_PLATFORM_RADXA
       //rx_video_output_enable_local_player_udp_output();
+      rx_video_output_enable_streamer_output();
+      #endif
+      #ifdef HW_PLATFORM_LINUX_GENERIC
+      // The desktop has a real video player, it decodes the video stream with
+      // GStreamer and shows it in a window.
       rx_video_output_enable_streamer_output();
       #endif
 

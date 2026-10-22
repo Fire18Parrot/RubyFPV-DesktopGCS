@@ -62,6 +62,11 @@ int compute_output_rc_value(Model* pModel, int nChannel, int prevRCValue, float 
 void log_current_full_radio_configuration(Model* pModel);
 
 bool radio_utils_set_interface_frequency(Model* pModel, int iRadioIndex, int iAssignedModelRadioLink, u32 uFrequencyKhz, shared_mem_process_stats* pProcessStats, u32 uDelayMs);
+
+// Sets the frequency and the bandwidth of a WiFi radio interface.
+// The bandwidth is passed as the `iw` channel width argument (HT20, HT40+, ...).
+// Returns true if the interface was configured.
+bool radio_utils_set_interface_frequency_and_bandwidth(int iRadioIndex, u32 uFrequencyKhz, const char* szHTFlag);
 bool radio_utils_set_datarate_atheros(Model* pModel, int iCard, int datarate_bps, u32 uDelayMs);
 
 int check_write_filesystem();

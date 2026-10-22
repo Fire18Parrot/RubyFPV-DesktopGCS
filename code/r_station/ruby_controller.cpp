@@ -105,7 +105,7 @@ int main(int argc, char *argv[])
    szPrefix[0] = 0;
 
    if ( pCS->iPrioritiesAdjustment && (pCS->iThreadPriorityCentral > 100) )
-      sprintf(szPrefix, "nice -n %d", pCS->iThreadPriorityCentral - 120);    
+      sprintf(szPrefix, "nice -n %d", hw_get_nice_value_for_raw_priority(pCS->iThreadPriorityCentral));
 
    hw_execute_ruby_process(szPrefix, "ruby_central", NULL, NULL);
    
@@ -186,7 +186,7 @@ int main(int argc, char *argv[])
          szPrefix[0] = 0;
 
          if ( pCS->iPrioritiesAdjustment && (pCS->iThreadPriorityCentral > 100) )
-            sprintf(szPrefix, "nice -n %d", pCS->iThreadPriorityCentral - 120);    
+            sprintf(szPrefix, "nice -n %d", hw_get_nice_value_for_raw_priority(pCS->iThreadPriorityCentral));
          hw_execute_ruby_process(szPrefix, "ruby_central", "-nointro", NULL);
          log_line_watchdog("Restarting ruby_central process done.");
          uTimeLastPaused = g_TimeNow;
@@ -246,21 +246,36 @@ int main(int argc, char *argv[])
 
       if ( bMustRestart )
       {
-         for( int i=0; i<1000; i++ )
+         // Wait for the old process to release the resources. The wait is
+         // interrupted if the controller is asked to stop, so that the
+         // controller can always be stopped.
+         for( int i=0; i<20; i++ )
+         {
+            if ( g_bQuit )
+               break;
             hardware_sleep_ms(500);
-           
+         }
+
+         if ( g_bQuit )
+            break;
+
          log_line_watchdog("Restarting ruby_central process...");
 
-         hw_stop_process("ruby_central");
-         shared_mem_process_stats_close(SHARED_MEM_WATCHDOG_CENTRAL, s_pProcessStatsCentral);   
+         // The user interface is given the time to close its window and to
+         // release its resources, before it is killed.
+         hw_stop_process_graceful("ruby_central", 5000);
+         shared_mem_process_stats_close(SHARED_MEM_WATCHDOG_CENTRAL, s_pProcessStatsCentral);
          s_pProcessStatsCentral = NULL;
 
          sprintf(szComm, "touch %s%s", FOLDER_CONFIG, FILE_TEMP_CONTROLLER_CENTRAL_CRASHED);
          hw_execute_bash_command(szComm, NULL);
-   
+
          hardware_sleep_ms(200);
 
-         hw_execute_bash_command("./ruby_central -reinit &", NULL);
+         // The binary is started with the same mechanism as the other
+         // processes, so that it is found no matter what is the current
+         // working directory of the controller.
+         hw_execute_ruby_process(NULL, "ruby_central", "-reinit", NULL);
          for( int i=0; i<3; i++ )
             hardware_sleep_ms(800);
    
@@ -275,7 +290,7 @@ int main(int argc, char *argv[])
          szPrefix[0] = 0;
 
          if ( pCS->iPrioritiesAdjustment && (pCS->iThreadPriorityCentral > 100) )
-            sprintf(szPrefix, "nice -n %d", pCS->iThreadPriorityCentral - 120);    
+            sprintf(szPrefix, "nice -n %d", hw_get_nice_value_for_raw_priority(pCS->iThreadPriorityCentral));
          hw_execute_ruby_process(szPrefix, "ruby_central", "-nointro", NULL);
          uTimeLastPaused = g_TimeNow;
          log_line_watchdog("Restarting ruby_central process done.");
@@ -297,9 +312,20 @@ int main(int argc, char *argv[])
    sem_unlink(SEMAPHORE_WATCHDOG_CONTROLLER_RESTART);
 
 
-   shared_mem_process_stats_close(SHARED_MEM_WATCHDOG_CENTRAL, s_pProcessStatsCentral);   
+   shared_mem_process_stats_close(SHARED_MEM_WATCHDOG_CENTRAL, s_pProcessStatsCentral);
    s_pProcessStatsCentral = NULL;
+
+   // The controller is the watchdog of the user interface process. When the
+   // controller is stopped, the user interface has to be stopped as well,
+   // otherwise the application would stay half started, with a window on the
+   // screen and no one that watches it. The user interface is given the time
+   // to close its window and to release its resources.
+   log_line("Stopping the user interface process...");
+   hw_stop_process_graceful("ruby_central", 5000);
+   if ( hw_process_exists("ruby_central") )
+      log_softerror_and_alarm("The user interface process did not exit.");
+
    log_line("Finished execution.");
    log_line_watchdog("Finished execution");
    return (0);
-} 
+}

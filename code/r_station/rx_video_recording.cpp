@@ -214,6 +214,29 @@ void _recording_cleanp_temp_recording_data()
    hw_execute_bash_command(szComm, NULL );
 }
 
+// Moves the data that is waiting in the recording pipe to the recording file.
+// It is used when the recording ends, to write out the data that is still in
+// the pipe. It returns the number of bytes moved to the file.
+static int _recording_move_pipe_data_to_file(u8* pBuffer, int iBufferSize)
+{
+   int iTotal = 0;
+   while ( (s_iPipeRecordingThreadRead > 0) && (s_iFileVideoRecordingOutput > 0) )
+   {
+      int iRead = read(s_iPipeRecordingThreadRead, pBuffer, iBufferSize);
+      if ( iRead <= 0 )
+         break;
+      int iRes = write(s_iFileVideoRecordingOutput, pBuffer, iRead);
+      if ( iRes != iRead )
+      {
+         log_softerror_and_alarm("[VideoRecording-Th] Failed to write %d bytes to the recording file, result: %d, error: %d (%s)",
+            iRead, iRes, errno, strerror(errno));
+         break;
+      }
+      iTotal += iRead;
+   }
+   return iTotal;
+}
+
 void* _thread_video_recording(void *argument)
 {
    log_line("[VideoRecording-Th] Thread to record started.");
@@ -404,6 +427,27 @@ void* _thread_video_recording(void *argument)
    }
    s_bRecordingThreadReadyForData = false;
    log_line("[VideoRecording-Th] Finishing recording...");
+
+   // Flush the pending data to the recording file.
+   // The received data is buffered by rx_video_recording_on_new_data() and it
+   // is written to the recording pipe only when that buffer is full, so
+   // without this flush the last data of the recording (up to the size of
+   // the buffer) would be lost.
+   _recording_move_pipe_data_to_file(uRecBuffer, sizeof(uRecBuffer)/sizeof(uRecBuffer[0]));
+   while ( s_iTempRecordingBufferFilledInBytes > 0 )
+   {
+      int iRes = write(s_iPipeRecordingThreadWrite, s_uTempRecordingBuffer, s_iTempRecordingBufferFilledInBytes);
+      if ( iRes <= 0 )
+         break;
+      s_iTempRecordingBufferFilledInBytes -= iRes;
+      if ( s_iTempRecordingBufferFilledInBytes > 0 )
+         memmove(s_uTempRecordingBuffer, s_uTempRecordingBuffer + iRes, s_iTempRecordingBufferFilledInBytes);
+      _recording_move_pipe_data_to_file(uRecBuffer, sizeof(uRecBuffer)/sizeof(uRecBuffer[0]));
+   }
+   if ( s_iTempRecordingBufferFilledInBytes > 0 )
+      log_softerror_and_alarm("[VideoRecording-Th] Failed to flush %d pending bytes to the recording file", s_iTempRecordingBufferFilledInBytes);
+   else
+      log_line("[VideoRecording-Th] Flushed the pending data to the recording file.");
 
    close( s_iPipeRecordingThreadWrite );
    s_iPipeRecordingThreadWrite = -1;
@@ -731,7 +775,10 @@ void rx_video_recording_on_new_data(u8* pData, int iLength)
    if ( (! s_bIsRecording) || s_bRequestedStopRecording || (-1 == s_iFileVideoRecordingOutput) || (NULL == pData) || (iLength <= 0) || (s_iPipeRecordingThreadWrite <= 0) || (! s_bRecordingThreadReadyForData) )
       return;
 
-   while ( ! s_bRecordingFoundStartOfFirstNAL )
+   // The start of the first NAL is searched in the received data. The search
+   // must not go past the end of the data: the data comes from a video
+   // packet, its length is not trusted.
+   while ( ! s_bRecordingFoundStartOfFirstNAL && (iLength > 0) )
    {
       s_uRecordingStreamPrevParsedToken = (s_uRecordingStreamPrevParsedToken << 8) | (s_uRecordingStreamCurrentParsedToken & 0xFF);
       s_uRecordingStreamCurrentParsedToken = (s_uRecordingStreamCurrentParsedToken << 8) | (*pData);
@@ -756,17 +803,31 @@ void rx_video_recording_on_new_data(u8* pData, int iLength)
 
    s_uRecordingFileSize += iLength;
 
-   if ( s_iTempRecordingBufferFilledInBytes + iLength > (int)sizeof(s_uTempRecordingBuffer)/(int)sizeof(s_uTempRecordingBuffer[0]) )
+   // The data is staged in the temporary buffer and it is written to the pipe
+   // when the buffer is full. The length of the data comes from the video
+   // packet, so it must not be able to write outside the buffer.
+   int iBytesToWrite = iLength;
+   while ( iBytesToWrite > 0 )
    {
-      int iRes = write(s_iPipeRecordingThreadWrite, s_uTempRecordingBuffer, s_iTempRecordingBufferFilledInBytes);
-      if ( iRes != s_iTempRecordingBufferFilledInBytes )
-         log_softerror_and_alarm("[VideoRecording] Failed to write to recorder pipe %d bytes. Ret code: %d, Error code: %d, err string: (%s)",
-            s_iTempRecordingBufferFilledInBytes, iRes, errno, strerror(errno));
-      s_iTempRecordingBufferFilledInBytes = 0;
-   }
+      int iBufferFree = (int)sizeof(s_uTempRecordingBuffer) - s_iTempRecordingBufferFilledInBytes;
+      int iChunk = (iBytesToWrite < iBufferFree) ? iBytesToWrite : iBufferFree;
+      if ( iChunk <= 0 )
+         break;
 
-   memcpy(&(s_uTempRecordingBuffer[s_iTempRecordingBufferFilledInBytes]), pData, iLength);
-   s_iTempRecordingBufferFilledInBytes += iLength;
+      memcpy(&(s_uTempRecordingBuffer[s_iTempRecordingBufferFilledInBytes]), pData, iChunk);
+      s_iTempRecordingBufferFilledInBytes += iChunk;
+      pData += iChunk;
+      iBytesToWrite -= iChunk;
+
+      if ( s_iTempRecordingBufferFilledInBytes >= (int)sizeof(s_uTempRecordingBuffer) )
+      {
+         int iRes = write(s_iPipeRecordingThreadWrite, s_uTempRecordingBuffer, s_iTempRecordingBufferFilledInBytes);
+         if ( iRes != s_iTempRecordingBufferFilledInBytes )
+            log_softerror_and_alarm("[VideoRecording] Failed to write to recorder pipe %d bytes. Ret code: %d, Error code: %d, err string: (%s)",
+               s_iTempRecordingBufferFilledInBytes, iRes, errno, strerror(errno));
+         s_iTempRecordingBufferFilledInBytes = 0;
+      }
+   }
 }
 
 void rx_video_recording_periodic_loop()

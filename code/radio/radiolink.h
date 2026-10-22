@@ -81,7 +81,22 @@ int radio_get_last_500ms_sent_bps_for_radio_interface(int iInterfaceIndex, u32 u
 int radio_interfaces_broken();
 
 int radio_open_interface_for_read(int interfaceIndex, int portNumber);
+
+// Opens a radio interface for reading the packets from a pcap capture file
+// instead of a live network interface. The filter, the encapsulation check
+// and the parsing of the received packets are the production ones, so a
+// recorded capture is replayed through the real receive path. It returns 1 if
+// the capture file was opened for reading, 0 if it failed.
+int radio_open_interface_for_read_from_file(int interfaceIndex, int portNumber, const char* szCaptureFileName);
 int radio_open_interface_for_write(int interfaceIndex);
+
+// Opens a radio interface for writing the RF frames to a pcap capture file
+// instead of the air. The file has the same link type as a monitor mode
+// capture of a real link (DLT_IEEE802_11_RADIO), so the frames that are
+// written to it can be read back with the production RX code
+// (radio_open_interface_for_read_from_file()).
+// It returns 0 for success, -1 for failure.
+int radio_open_interface_for_write_to_file(int interfaceIndex, const char* szCaptureFileName);
 void radio_close_interfaces_for_read();
 void radio_close_interface_for_read(int interfaceIndex);
 void radio_close_interface_for_write(int interfaceIndex);

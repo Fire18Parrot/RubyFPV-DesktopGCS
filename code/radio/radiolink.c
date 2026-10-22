@@ -550,7 +550,13 @@ int radio_get_last_read_error_code()
    return s_iRadioLastReadErrorCode; 
 }
 
-int _radio_open_interface_for_read_with_filter(int interfaceIndex, char* szFilter, char* szFilterPrism)
+// Opens a radio interface for reading. If szCaptureFileName is not NULL, the
+// packets are read from a pcap capture file instead of a live network
+// interface. The filter, the encapsulation check and the parsing of the
+// received packets are exactly the same in both cases: only the source of the
+// captured bytes is different. It is used to replay a recorded capture
+// through the real receive path (diagnostics and regression tests).
+int _radio_open_interface_for_read_with_filter(int interfaceIndex, char* szFilter, char* szFilterPrism, const char* szCaptureFileName)
 {
    s_iRadioInterfacesBroken = 0;
 
@@ -582,42 +588,59 @@ int _radio_open_interface_for_read_with_filter(int interfaceIndex, char* szFilte
    pRadioHWInfo->runtimeInterfaceInfoRx.iErrorCount = 0;
 
    szErrbuf[0] = '\0';
-   //pRadioHWInfo->runtimeInterfaceInfoRx.ppcap = pcap_open_live(pRadioHWInfo->szName, 4096, 1, 1, szErrbuf);
-   pRadioHWInfo->runtimeInterfaceInfoRx.ppcap = pcap_create(pRadioHWInfo->szName, szErrbuf);
 
-   if (pRadioHWInfo->runtimeInterfaceInfoRx.ppcap == NULL)
+   if ( NULL != szCaptureFileName )
    {
-      log_softerror_and_alarm("Unable to open [%s]: %s", pRadioHWInfo->szName, szErrbuf);
-      return -1;
+      // The packets are read from a pcap capture file. The live interface is
+      // not touched at all: no promiscuous mode, no timeout, no immediate
+      // mode, because those settings belong to a live capture only.
+      pRadioHWInfo->runtimeInterfaceInfoRx.ppcap = pcap_open_offline(szCaptureFileName, szErrbuf);
+      if ( NULL == pRadioHWInfo->runtimeInterfaceInfoRx.ppcap )
+      {
+         log_softerror_and_alarm("Unable to open the capture file [%s]: %s", szCaptureFileName, szErrbuf);
+         return -1;
+      }
+      log_line("Opened the capture file [%s] for reading on radio interface %d (%s).", szCaptureFileName, interfaceIndex+1, pRadioHWInfo->szName);
    }
-
-   log_line("pcap snapshot length: %d bytes", pcap_snapshot(pRadioHWInfo->runtimeInterfaceInfoRx.ppcap));
-   //int iLen = 2096;
-   int iLen = MAX_PACKET_TOTAL_SIZE*6;
-   //int iLen = MAX_PACKET_TOTAL_SIZE*30;
-   if ( pcap_set_snaplen(pRadioHWInfo->runtimeInterfaceInfoRx.ppcap, iLen) !=0 )
-      log_softerror_and_alarm("Error setting [%s] snap buffer length: %s", pRadioHWInfo->szName, pcap_geterr(pRadioHWInfo->runtimeInterfaceInfoRx.ppcap));
    else
-      log_line("Set pcap len to %d", iLen);
-   if ( pcap_set_promisc(pRadioHWInfo->runtimeInterfaceInfoRx.ppcap, 1) != 0 )
-      log_softerror_and_alarm("Error setting [%s] to promiscous mode: %s", pRadioHWInfo->szName, pcap_geterr(pRadioHWInfo->runtimeInterfaceInfoRx.ppcap));
+   {
+      //pRadioHWInfo->runtimeInterfaceInfoRx.ppcap = pcap_open_live(pRadioHWInfo->szName, 4096, 1, 1, szErrbuf);
+      pRadioHWInfo->runtimeInterfaceInfoRx.ppcap = pcap_create(pRadioHWInfo->szName, szErrbuf);
 
-   if ( pcap_set_timeout(pRadioHWInfo->runtimeInterfaceInfoRx.ppcap, -1) !=0) 
-      log_softerror_and_alarm("Error setting [%s] timeout: %s", pRadioHWInfo->szName, pcap_geterr(pRadioHWInfo->runtimeInterfaceInfoRx.ppcap));
-   
-   if ( pcap_set_immediate_mode(pRadioHWInfo->runtimeInterfaceInfoRx.ppcap, 1) != 0 )
-      log_softerror_and_alarm("Error setting [%s] to immediate mode: %s", pRadioHWInfo->szName, pcap_geterr(pRadioHWInfo->runtimeInterfaceInfoRx.ppcap));
-   
-   if ( pcap_activate(pRadioHWInfo->runtimeInterfaceInfoRx.ppcap) !=0) 
-      log_softerror_and_alarm("Error setting [%s] to immediate mode: %s", pRadioHWInfo->szName, pcap_geterr(pRadioHWInfo->runtimeInterfaceInfoRx.ppcap));
-    
-   if ( pcap_setnonblock(pRadioHWInfo->runtimeInterfaceInfoRx.ppcap, 1, szErrbuf) < 0 )
-      log_softerror_and_alarm("Error setting [%s] to nonblocking mode: %s", pRadioHWInfo->szName, szErrbuf);
-        
-   //if ( pcap_setdirection(pRadioHWInfo->runtimeInterfaceInfoRx.ppcap, PCAP_D_IN) < 0 )
-   //   log_softerror_and_alarm("Error setting [%s] direction", pRadioHWInfo->szName);
+      if (pRadioHWInfo->runtimeInterfaceInfoRx.ppcap == NULL)
+      {
+         log_softerror_and_alarm("Unable to open [%s]: %s", pRadioHWInfo->szName, szErrbuf);
+         return -1;
+      }
 
-   log_line("pcap snapshot length: %d bytes", pcap_snapshot(pRadioHWInfo->runtimeInterfaceInfoRx.ppcap));
+      log_line("pcap snapshot length: %d bytes", pcap_snapshot(pRadioHWInfo->runtimeInterfaceInfoRx.ppcap));
+      //int iLen = 2096;
+      int iLen = MAX_PACKET_TOTAL_SIZE*6;
+      //int iLen = MAX_PACKET_TOTAL_SIZE*30;
+      if ( pcap_set_snaplen(pRadioHWInfo->runtimeInterfaceInfoRx.ppcap, iLen) !=0 )
+         log_softerror_and_alarm("Error setting [%s] snap buffer length: %s", pRadioHWInfo->szName, pcap_geterr(pRadioHWInfo->runtimeInterfaceInfoRx.ppcap));
+      else
+         log_line("Set pcap len to %d", iLen);
+      if ( pcap_set_promisc(pRadioHWInfo->runtimeInterfaceInfoRx.ppcap, 1) != 0 )
+         log_softerror_and_alarm("Error setting [%s] to promiscous mode: %s", pRadioHWInfo->szName, pcap_geterr(pRadioHWInfo->runtimeInterfaceInfoRx.ppcap));
+
+      if ( pcap_set_timeout(pRadioHWInfo->runtimeInterfaceInfoRx.ppcap, -1) !=0)
+         log_softerror_and_alarm("Error setting [%s] timeout: %s", pRadioHWInfo->szName, pcap_geterr(pRadioHWInfo->runtimeInterfaceInfoRx.ppcap));
+
+      if ( pcap_set_immediate_mode(pRadioHWInfo->runtimeInterfaceInfoRx.ppcap, 1) != 0 )
+         log_softerror_and_alarm("Error setting [%s] to immediate mode: %s", pRadioHWInfo->szName, pcap_geterr(pRadioHWInfo->runtimeInterfaceInfoRx.ppcap));
+
+      if (pcap_activate(pRadioHWInfo->runtimeInterfaceInfoRx.ppcap) !=0)
+         log_softerror_and_alarm("Error setting [%s] to immediate mode: %s", pRadioHWInfo->szName, pcap_geterr(pRadioHWInfo->runtimeInterfaceInfoRx.ppcap));
+
+      if ( pcap_setnonblock(pRadioHWInfo->runtimeInterfaceInfoRx.ppcap, 1, szErrbuf) < 0 )
+         log_softerror_and_alarm("Error setting [%s] to nonblocking mode: %s", pRadioHWInfo->szName, szErrbuf);
+
+      //if (pcap_setdirection(pRadioHWInfo->runtimeInterfaceInfoRx.ppcap, PCAP_D_IN) < 0 )
+      //   log_softerror_and_alarm("Error setting [%s] direction", pRadioHWInfo->szName);
+
+      log_line("pcap snapshot length: %d bytes", pcap_snapshot(pRadioHWInfo->runtimeInterfaceInfoRx.ppcap));
+   }
 
    int nLinkEncap = pcap_datalink(pRadioHWInfo->runtimeInterfaceInfoRx.ppcap);
 
@@ -670,8 +693,8 @@ int radio_open_interface_for_read(int interfaceIndex, int portNumber)
    sprintf(szFilter, "ether[0x00:2] == 0x0801 && ether[0x0a:4] == 0x13123456 && ether[0x04:1] == 0x%.2x", port_encoded);
    sprintf(szFilterPrism, "radio[0x40:2] == 0x0801 && radio[0x4a:4] == 0x13123456 && radio[0x44:1] == 0x%.2x", port_encoded);
 
-   int iResult = _radio_open_interface_for_read_with_filter(interfaceIndex, szFilter, szFilterPrism);
-   
+   int iResult = _radio_open_interface_for_read_with_filter(interfaceIndex, szFilter, szFilterPrism, NULL);
+
    if ( iResult < 0 )
       return iResult;
 
@@ -685,6 +708,43 @@ int radio_open_interface_for_read(int interfaceIndex, int portNumber)
       log_line("Opened radio interface %d (%s) for reading on custom port %d on %s. Returned fd=%d, ppcap: %d", interfaceIndex+1, pRadioHWInfo->szName, portNumber, str_format_frequency(pRadioHWInfo->uCurrentFrequencyKhz), pRadioHWInfo->runtimeInterfaceInfoRx.selectable_fd, pRadioHWInfo->runtimeInterfaceInfoRx.ppcap);
 
    return pRadioHWInfo->runtimeInterfaceInfoRx.selectable_fd;
+}
+
+
+// Opens a radio interface for reading the packets from a pcap capture file
+// instead of a live network interface.
+//
+// The production filter, the encapsulation check and the parsing of the
+// received packets are exactly the same as for a live interface, so a
+// recorded capture is replayed through the real receive path. The live
+// interface is not touched at all.
+//
+// It returns 1 if the capture file was opened for reading, 0 if it failed.
+int radio_open_interface_for_read_from_file(int interfaceIndex, int portNumber, const char* szCaptureFileName)
+{
+   if ( (NULL == szCaptureFileName) || (0 == strlen(szCaptureFileName)) )
+   {
+      log_softerror_and_alarm("Invalid capture file name for opening radio interface %d for read.", interfaceIndex+1);
+      return 0;
+   }
+
+   char szFilter[256];
+   char szFilterPrism[256];
+
+   radio_hw_info_t* pRadioHWInfo = hardware_get_radio_info(interfaceIndex);
+   if ( NULL == pRadioHWInfo )
+      return 0;
+
+   int port_encoded = _radio_encode_port(portNumber);
+   sprintf(szFilter, "ether[0x00:2] == 0x0801 && ether[0x0a:4] == 0x13123456 && ether[0x04:1] == 0x%.2x", port_encoded);
+   sprintf(szFilterPrism, "radio[0x40:2] == 0x0801 && radio[0x4a:4] == 0x13123456 && radio[0x44:1] == 0x%.2x", port_encoded);
+
+   int iResult = _radio_open_interface_for_read_with_filter(interfaceIndex, szFilter, szFilterPrism, szCaptureFileName);
+   if ( iResult < 0 )
+      return 0;
+
+   pRadioHWInfo->runtimeInterfaceInfoRx.nPort = portNumber;
+   return 1;
 }
 
 
@@ -798,6 +858,69 @@ int radio_open_interface_for_write(int interfaceIndex)
    return pRadioHWInfo->runtimeInterfaceInfoTx.selectable_fd;
 }
 
+// Opens a radio interface for writing the RF frames to a pcap capture file
+// instead of the air.
+//
+// The frames that are written to the file are exactly the frames that would
+// have been put on the air: the same radiotap header, the same 802.11 header
+// and the same CRC, built by radio_build_new_raw_ieee_packet() and written by
+// radio_write_raw_ieee_packet(). The file has the same link type as a monitor
+// mode capture of a real link (DLT_IEEE802_11_RADIO), so it can be read back
+// with the production RX code (radio_open_interface_for_read_from_file()).
+//
+// This is the seam that lets the real transmit code be exercised on a
+// machine with no radio attached: the vehicle side builds the video packets,
+// the radio layer frames them and the station side reads them back.
+int radio_open_interface_for_write_to_file(int interfaceIndex, const char* szCaptureFileName)
+{
+   radio_hw_info_t* pRadioHWInfo = hardware_get_radio_info(interfaceIndex);
+   if ( NULL == pRadioHWInfo )
+      return -1;
+
+   if ( (NULL == szCaptureFileName) || (0 == strlen(szCaptureFileName)) )
+   {
+      log_softerror_and_alarm("Invalid capture file name for opening radio interface %d for writing to file.", interfaceIndex+1);
+      return -1;
+   }
+
+   if ( ! hardware_radio_is_wifi_radio(pRadioHWInfo) )
+   {
+      log_softerror_and_alarm("Tried to open a non 2.4/5.8 radio for writing to a capture file.");
+      return -1;
+   }
+
+   if ( 0 != pRadioHWInfo->openedForWrite )
+   {
+      log_softerror_and_alarm("Radio interface %d was already opened for writing.", interfaceIndex+1);
+      return -1;
+   }
+
+   pRadioHWInfo->runtimeInterfaceInfoTx.ppcap = pcap_open_dead(DLT_IEEE802_11_RADIO, 65535);
+   if ( NULL == pRadioHWInfo->runtimeInterfaceInfoTx.ppcap )
+   {
+      log_error_and_alarm("Failed to create the capture file handle for radio interface %d", interfaceIndex+1);
+      return -1;
+   }
+
+   pRadioHWInfo->runtimeInterfaceInfoTx.pdump = pcap_dump_open(pRadioHWInfo->runtimeInterfaceInfoTx.ppcap, szCaptureFileName);
+   if ( NULL == pRadioHWInfo->runtimeInterfaceInfoTx.pdump )
+   {
+      log_error_and_alarm("Failed to open the capture file %s for writing", szCaptureFileName);
+      pcap_close(pRadioHWInfo->runtimeInterfaceInfoTx.ppcap);
+      pRadioHWInfo->runtimeInterfaceInfoTx.ppcap = NULL;
+      return -1;
+   }
+
+   pRadioHWInfo->runtimeInterfaceInfoTx.bTxToFile = 1;
+   pRadioHWInfo->runtimeInterfaceInfoTx.iErrorCount = 0;
+   // There is no descriptor to select on: the file is written synchronously.
+   pRadioHWInfo->runtimeInterfaceInfoTx.selectable_fd = 0;
+   pRadioHWInfo->openedForWrite = 1;
+
+   log_line("Opened radio interface %d (%s) for writing to the capture file %s", interfaceIndex+1, pRadioHWInfo->szName, szCaptureFileName);
+   return 0;
+}
+
 void radio_close_interface_for_read(int interfaceIndex)
 {
    radio_hw_info_t* pRadioHWInfo = hardware_get_radio_info(interfaceIndex);
@@ -847,7 +970,14 @@ void radio_close_interface_for_write(int interfaceIndex)
 
    log_line("Closed radio interface %d (%s) that was used for write. Selectable write fd was: %d, ppcap was: %d", interfaceIndex+1, pRadioHWInfo->szName, pRadioHWInfo->runtimeInterfaceInfoTx.selectable_fd, pRadioHWInfo->runtimeInterfaceInfoTx.ppcap);
 
-   if ( s_iUsePCAPForTx )
+   if ( NULL != pRadioHWInfo->runtimeInterfaceInfoTx.pdump )
+   {
+      // The interface was opened for writing to a capture file.
+      pcap_dump_close(pRadioHWInfo->runtimeInterfaceInfoTx.pdump);
+      pRadioHWInfo->runtimeInterfaceInfoTx.pdump = NULL;
+   }
+
+   if ( s_iUsePCAPForTx || pRadioHWInfo->runtimeInterfaceInfoTx.bTxToFile )
    {
       if ( NULL != pRadioHWInfo->runtimeInterfaceInfoTx.ppcap )
          pcap_close(pRadioHWInfo->runtimeInterfaceInfoTx.ppcap);
@@ -863,6 +993,7 @@ void radio_close_interface_for_write(int interfaceIndex)
    }
 
    pRadioHWInfo->runtimeInterfaceInfoTx.ppcap = NULL;
+   pRadioHWInfo->runtimeInterfaceInfoTx.bTxToFile = 0;
    pRadioHWInfo->runtimeInterfaceInfoTx.selectable_fd = -1;
    pRadioHWInfo->runtimeInterfaceInfoTx.iErrorCount = 0;
    pRadioHWInfo->openedForWrite = 0;
@@ -957,9 +1088,35 @@ u8* radio_process_wlan_data_in(int interfaceNumber, int* piOutPacketLength, int*
    */
    struct pcap_pkthdr pcapHeader;
    ppcapPacketHeader = &pcapHeader;
-   pRadioPayload = (u8*) pcap_next(pRadioHWInfo->runtimeInterfaceInfoRx.ppcap, ppcapPacketHeader); 
-   if ( NULL == pRadioPayload )
+   // The pcap handle is non blocking: pcap_next_ex returns 0 when there is no packet available at this
+   // moment, which is a normal condition and not an error.
+   int iPcapResult = pcap_next_ex(pRadioHWInfo->runtimeInterfaceInfoRx.ppcap, &ppcapPacketHeader, (const u_char**)&pRadioPayload);
+   if ( 1 != iPcapResult )
+   {
+      if ( 0 == iPcapResult )
+      {
+         // No packet available at this moment
+         #ifdef FEATURE_RADIO_SYNCHRONIZE_RXTX_THREADS
+         if ( 1 == s_iMutexRadioSyncRxTxThreadsInitialized )
+            pthread_mutex_unlock(&s_pMutexRadioSyncRxTxThreads);
+         #endif
+         return NULL;
+      }
+      // An error occurred. The pending error of the socket (for example the ENOBUFS of a full receive
+      // buffer) is cleared by this read, so the poll will not report it again at every iteration.
+      pRadioHWInfo->runtimeInterfaceInfoRx.iErrorCount++;
+      if ( 0 == (pRadioHWInfo->runtimeInterfaceInfoRx.iErrorCount % 10) )
+         log_softerror_and_alarm("rx pcap ERROR on radio interface %d (%s): %s (error count: %d)",
+            interfaceNumber+1,
+            pRadioHWInfo->szName,
+            pcap_geterr(pRadioHWInfo->runtimeInterfaceInfoRx.ppcap),
+            pRadioHWInfo->runtimeInterfaceInfoRx.iErrorCount);
+      #ifdef FEATURE_RADIO_SYNCHRONIZE_RXTX_THREADS
+      if ( 1 == s_iMutexRadioSyncRxTxThreadsInitialized )
+         pthread_mutex_unlock(&s_pMutexRadioSyncRxTxThreads);
+      #endif
       return NULL;
+   }
    #ifdef DEBUG_PACKET_RECEIVED
    log_line("RX Buffer: caplen: %d bytes, len: %d", ppcapPacketHeader->caplen, ppcapPacketHeader->len);
    #endif
@@ -1016,7 +1173,12 @@ u8* radio_process_wlan_data_in(int interfaceNumber, int* piOutPacketLength, int*
 	
          case IEEE80211_RADIOTAP_ANTENNA:
             //pRadioHWInfo->runtimeInterfaceInfoRx.radioHwRxInfo.nAntenna = (*rti.this_arg) + 1;
-            iAntennaCount++;
+            // The number of the antennas is bounded: a frame that reports more
+            // antennas than the arrays can hold (a monitor interface reports
+            // one antenna per chain) must not make the code write outside of
+            // them.
+            if ( iAntennaCount < (MAX_RADIO_ANTENNAS - 1) )
+               iAntennaCount++;
             break;
 		
          case IEEE80211_RADIOTAP_FLAGS:
@@ -1054,10 +1216,28 @@ u8* radio_process_wlan_data_in(int interfaceNumber, int* piOutPacketLength, int*
 
    sRadioLastReceivedHeadersLength = rti.max_length + sizeof(s_uIEEEHeaderData);
    pRadioPayload += sRadioLastReceivedHeadersLength;
-   payloadLength = ppcapPacketHeader->len - sRadioLastReceivedHeadersLength;
+
+   // The length of the payload on the wire is the length of the frame, but
+   // only the captured bytes (the caplen) are really in the capture buffer.
+   // The copy below is bounded by the number of captured bytes and by the
+   // size of the read buffer.
+   int iCapturedPayloadLength = ppcapPacketHeader->caplen - sRadioLastReceivedHeadersLength;
+   if ( iCapturedPayloadLength < 0 )
+      iCapturedPayloadLength = 0;
+   int iWirePayloadLength = ppcapPacketHeader->len - sRadioLastReceivedHeadersLength;
+   if ( iWirePayloadLength < 0 )
+      iWirePayloadLength = 0;
    // Ralink and Atheros both always supply the FCS to userspace at the end, so remove it from size
    if (pRadioHWInfo->runtimeInterfaceInfoRx.radioHwRxInfo.nRadiotapFlags & IEEE80211_RADIOTAP_F_FCS)
-      payloadLength -= 4;
+   {
+      iWirePayloadLength -= 4;
+      iCapturedPayloadLength -= 4;
+      if ( iCapturedPayloadLength < 0 )
+         iCapturedPayloadLength = 0;
+   }
+   payloadLength = (iWirePayloadLength < iCapturedPayloadLength) ? iWirePayloadLength : iCapturedPayloadLength;
+   if ( payloadLength > MAX_PACKET_LENGTH_PCAP )
+      payloadLength = MAX_PACKET_LENGTH_PCAP;
 
    #ifdef DEBUG_PACKET_RECEIVED
    log_line("ieee iterator length: %d, iee header: %d", rti.max_length,sizeof(s_uIEEEHeaderData) );
@@ -1512,7 +1692,21 @@ int radio_write_raw_ieee_packet(int interfaceIndex, u8* pData, int dataLength, i
 
    for( int k=0; k<=iRepeatCount; k++ )
    {
-      if ( s_iUsePCAPForTx )
+      if ( NULL != pRadioHWInfo->runtimeInterfaceInfoTx.pdump )
+      {
+         // The interface was opened for writing to a capture file: the frame
+         // is written to the file, with the same bytes that would have gone
+         // on the air.
+         struct pcap_pkthdr oHeader;
+         memset(&oHeader, 0, sizeof(oHeader));
+         oHeader.caplen = dataLength;
+         oHeader.len = dataLength;
+         oHeader.ts.tv_sec = get_current_timestamp_ms() / 1000;
+         oHeader.ts.tv_usec = (get_current_timestamp_ms() % 1000) * 1000;
+         pcap_dump((u_char*)pRadioHWInfo->runtimeInterfaceInfoTx.pdump, &oHeader, pData);
+         len = dataLength;
+      }
+      else if ( s_iUsePCAPForTx )
       {
          len = pcap_inject(pRadioHWInfo->runtimeInterfaceInfoTx.ppcap, pData, dataLength);
          if ( len < dataLength )

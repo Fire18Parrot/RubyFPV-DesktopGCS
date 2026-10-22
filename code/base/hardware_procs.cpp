@@ -509,7 +509,13 @@ void hw_process_get_pids(const char* szProcName, char* szOutput)
    if ( strlen(p) < 3 )
    {
       log_line("No result on pidof. Check using pgrep...");
-      sprintf(szComm, "pgrep %s", szProcName);
+      // The name of a process is limited to 15 characters, the longer names
+      // have to be searched in the whole command line. The '[/]' in the
+      // pattern is used to not match the command that does the search.
+      if ( strlen(szProcName) > 15 )
+         sprintf(szComm, "pgrep -f \"[/]%s\" 2>/dev/null", szProcName);
+      else
+         sprintf(szComm, "pgrep %s 2>/dev/null", szProcName);
       hw_execute_bash_command_raw_silent(szComm, szOutput);
       removeTrailingNewLines(szOutput);
       log_line("Result of [pgrep %s]: (%s)", szProcName, szOutput);
@@ -589,7 +595,7 @@ void hw_stop_process(const char* szProcName)
       return;
 
    log_line("Stopping process [%s]...", szProcName);
-   
+
    hw_process_get_pids(szProcName, szPIDs);
    removeTrailingNewLines(szPIDs);
    replaceNewLinesToSpaces(szPIDs);
@@ -622,6 +628,58 @@ void hw_stop_process(const char* szProcName)
    }
    else
       log_line("Process [%s] does not exists.", szProcName);
+}
+
+
+// Stops a process, giving it the time to stop by itself.
+//
+// The process is asked to stop with the SIGTERM signal, so that it can close
+// its resources (the user interface window, the shared memory, the message
+// queues), and it is killed only if it does not exit in the given time.
+// This is used for the processes that need more than the default grace time
+// to stop, ex: the user interface process.
+void hw_stop_process_graceful(const char* szProcName, u32 uGraceMs)
+{
+   char szComm[1024];
+   char szPIDs[512];
+
+   if ( NULL == szProcName || 0 == szProcName[0] )
+      return;
+
+   log_line("Stopping process [%s]...", szProcName);
+
+   hw_process_get_pids(szProcName, szPIDs);
+   removeTrailingNewLines(szPIDs);
+   replaceNewLinesToSpaces(szPIDs);
+   if ( strlen(szPIDs) <= 2 )
+   {
+      log_line("Process [%s] does not exists.", szProcName);
+      return;
+   }
+
+   log_line("Found PID(s) for process to stop %s: %s", szProcName, szPIDs);
+   sprintf(szComm, "kill %s 2>/dev/null", szPIDs);
+   hw_execute_bash_command(szComm, NULL);
+
+   u32 uTimeStart = get_current_timestamp_ms();
+   while ( get_current_timestamp_ms() < uTimeStart + uGraceMs )
+   {
+      hardware_sleep_ms(50);
+      szPIDs[0] = 0;
+      hw_process_get_pids(szProcName, szPIDs);
+      removeTrailingNewLines(szPIDs);
+      replaceNewLinesToSpaces(szPIDs);
+      if ( strlen(szPIDs) < 2 )
+      {
+         log_line("Did stopped process %s", szProcName);
+         return;
+      }
+   }
+
+   log_softerror_and_alarm("The process %s did not stop in %u ms, killing it.", szProcName, uGraceMs);
+   sprintf(szComm, "kill -9 %s 2>/dev/null", szPIDs);
+   hw_execute_bash_command(szComm, NULL);
+   hardware_sleep_ms(20);
 }
 
 
@@ -1331,6 +1389,66 @@ void hw_execute_ruby_process(const char* szPrefixes, const char* szProcess, cons
    hw_execute_ruby_process_wait(szPrefixes, szProcess, szParams, szOutput, 0);
 }
 
+// Resolves the full path of a Ruby binary.
+//
+// The precedence is:
+//   1) the name as it is given, checked as a filesystem path. A relative name
+//      is resolved against the current working directory, it is NOT searched
+//      in the PATH of the environment.
+//   2) the binaries folder of the platform (FOLDER_BINARIES), used when the
+//      name as it is given does not exist.
+//   3) the debug folder (/tmp/debug), which overrides the result of 1) and
+//      2): when the debug folder exists and it has the binary, the debug
+//      build is used.
+//
+// The legacy /tmp/debug override is preserved exactly: it wins over the
+// binaries folder and over the name as it is given.
+int hw_get_ruby_process_full_path(const char* szProcess, char* szFullPath, int iFullPathSize)
+{
+   if ( (NULL == szProcess) || (0 == szProcess[0]) || (NULL == szFullPath) || (iFullPathSize < 2) )
+      return 0;
+
+   szFullPath[0] = 0;
+
+   // The path as it is given. It can be absolute, or it can be relative, in
+   // which case it is relative to the current working directory. It is not
+   // searched in the PATH of the environment.
+   strncpy(szFullPath, szProcess, iFullPathSize-1);
+   szFullPath[iFullPathSize-1] = 0;
+
+   // The binaries folder of the platform, used when the name as it is given
+   // does not exist.
+   if ( access(szFullPath, R_OK) == -1 )
+   {
+      char szPath[MAX_FILE_PATH_SIZE];
+      snprintf(szPath, sizeof(szPath)/sizeof(szPath[0]), "%s%s", FOLDER_BINARIES, szProcess);
+      strncpy(szFullPath, szPath, iFullPathSize-1);
+      szFullPath[iFullPathSize-1] = 0;
+   }
+
+   // The debug folder, it overrides the path that was found above.
+   if ( access("/tmp/debug", R_OK) != -1 )
+   {
+      char szPath[MAX_FILE_PATH_SIZE];
+      snprintf(szPath, sizeof(szPath)/sizeof(szPath[0]), "/tmp/%s", szProcess);
+      if ( access(szPath, R_OK) != -1 )
+      {
+         strncpy(szFullPath, szPath, iFullPathSize-1);
+         szFullPath[iFullPathSize-1] = 0;
+      }
+   }
+
+   if ( access(szFullPath, R_OK) == -1 )
+   {
+      // The binary was not found, the buffer is cleared so the caller never
+      // gets a path that does not exist.
+      szFullPath[0] = 0;
+      return 0;
+   }
+
+   return 1;
+}
+
 void hw_execute_ruby_process_wait(const char* szPrefixes, const char* szProcess, const char* szParams, char* szOutput, int iWait)
 {
    if ( (NULL == szProcess) || (0 == szProcess[0]) )
@@ -1344,21 +1462,10 @@ void hw_execute_ruby_process_wait(const char* szPrefixes, const char* szProcess,
       szOutput[0] = 0;
    
    char szFullPath[MAX_FILE_PATH_SIZE];
-   char szFullPathDebug[MAX_FILE_PATH_SIZE];
-   szFullPathDebug[0] = 0;
-   strcpy(szFullPath, szProcess);
-   if ( access(szFullPath, R_OK) == -1 )
-      sprintf(szFullPath, "%s%s", FOLDER_BINARIES, szProcess);
-
-   if ( access("/tmp/debug", R_OK) != -1 )
+   szFullPath[0] = 0;
+   if ( ! hw_get_ruby_process_full_path(szProcess, szFullPath, sizeof(szFullPath)) )
    {
-      sprintf(szFullPathDebug, "/tmp/%s", szProcess);
-      if ( access(szFullPathDebug, R_OK) != -1 )
-         strcpy(szFullPath, szFullPathDebug);
-   }
-   if ( access(szFullPath, R_OK) == -1 )
-   {
-      log_error_and_alarm("Can't execute Ruby process. Not found here: [%s] or here: [%s]", szProcess, szFullPath );
+      log_error_and_alarm("Can't execute Ruby process. Not found here: [%s] or here: [%s%s]", szProcess, FOLDER_BINARIES, szProcess );
       return;
    }
 
@@ -1456,6 +1563,37 @@ int hw_procs_get_cpu_count()
       s_iCPUCoresCount = 1;
    }
    return s_iCPUCoresCount;
+}
+
+int hw_process_has_net_admin_capability()
+{
+   // Configuring a wireless interface (mode, channel, frequency, power) needs
+   // the CAP_NET_ADMIN capability. The effective capabilities of the process
+   // are read from the proc filesystem, so that no library is needed and no
+   // privilege is changed in any way.
+   #define CAP_NET_ADMIN_BIT 12
+
+   FILE* fd = fopen("/proc/self/status", "r");
+   if ( NULL == fd )
+      return 0;
+
+   char szLine[256];
+   bool bFound = false;
+   unsigned long long uEffective = 0;
+   while ( NULL != fgets(szLine, sizeof(szLine), fd) )
+   {
+      if ( 0 != strncmp(szLine, "CapEff:", 7) )
+         continue;
+      uEffective = strtoull(&szLine[7], NULL, 16);
+      bFound = true;
+      break;
+   }
+   fclose(fd);
+
+   if ( ! bFound )
+      return 0;
+
+   return ( 0 != ( (uEffective >> CAP_NET_ADMIN_BIT) & 1 ) ) ? 1 : 0;
 }
 
 int hw_get_current_thread_id()
@@ -1841,7 +1979,7 @@ void hw_set_priority_current_proc(int iRawPriority)
    // 0,1 disabled
    // 2...100 RT priority
    // 101..140 nice priority
-   
+
    if ( (iRawPriority < 2) || (iRawPriority > 139) )
       return;
 
@@ -1849,6 +1987,26 @@ void hw_set_priority_current_proc(int iRawPriority)
       hw_set_current_thread_rt_priority("set_proc_prio", iRawPriority);
    else
       hw_set_current_proc_nice_priority("set_proc_prio", iRawPriority);
+}
+
+
+// Returns the nice value to be used to start a process with the given raw
+// thread priority.
+//
+// On the embedded platforms the application is started as root, so it can set
+// any priority, including a negative nice value. On a generic Linux desktop
+// the application is started as a normal user, and a normal user can only
+// lower the priority of a process (a positive nice value). A negative nice
+// value would make the start of the process fail with "cannot set niceness:
+// Permission denied", so it is replaced with 0.
+int hw_get_nice_value_for_raw_priority(int iRawPriority)
+{
+   int iNice = iRawPriority - 120;
+   #ifdef HW_PLATFORM_LINUX_GENERIC
+   if ( iNice < 0 )
+      iNice = 0;
+   #endif
+   return iNice;
 }
 
 
@@ -2049,10 +2207,16 @@ void hw_set_current_proc_nice_priority(const char* szLogPrefix, int iNewRawPrior
 
    if ( (iNewRawPriority > 100) && (iNewRawPriority < 140) )
    {
+#ifdef HW_PLATFORM_LINUX_GENERIC
+      // On the desktop the renice command needs root privileges and it is
+      // not needed either, the process priority is set with setpriority below.
+      log_line("[HWP] (%s) Skipping the renice command (requires root).", szPrefix);
+#else
       char szComm[256];
       int iPID = getpid();
       snprintf(szComm, sizeof(szComm)/sizeof(szComm[0]), "renice -n %d -p %d", iNewRawPriority-120, iPID);
       hw_execute_bash_command(szComm, NULL);
+#endif
     
       setpriority(PRIO_PROCESS, 0, 120-iNewRawPriority);
    }

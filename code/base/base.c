@@ -410,6 +410,11 @@ int _log_check_for_service_log_access()
 {
    if ( 0 == s_logUseService )
       return 0;
+#ifdef HW_PLATFORM_LINUX_GENERIC
+   // The desktop build does not have the logger service daemon, the log is
+   // written directly to the log file.
+   return 0;
+#endif
    if ( s_logServiceMessageQueue >= 0 )
       return 1;
 
@@ -694,9 +699,14 @@ void log_line(const char* format, ...)
  
    if ( _log_check_for_service_log_access() )
    {
+      // The argument list is consumed by this output, so an independent copy
+      // is taken before the first use of it.
+      va_list argsCopy;
+      va_copy(argsCopy, args);
       char szBuff[MAX_SERVICE_LOG_ENTRY_LENGTH];
-      vsnprintf(szBuff,MAX_SERVICE_LOG_ENTRY_LENGTH-1, format, args);
+      vsnprintf(szBuff,MAX_SERVICE_LOG_ENTRY_LENGTH-1, format, argsCopy);
       szBuff[MAX_SERVICE_LOG_ENTRY_LENGTH-1] = 0;
+      va_end(argsCopy);
       _log_service_entry(szTime, szBuff);
       va_end(args);
       return;
@@ -728,15 +738,28 @@ void log_line(const char* format, ...)
       FILE* fdAux = fopen(s_szAdditionalLogFile, "a+");
       if ( NULL != fdAux )
       {
-         vfprintf(fdAux, format, args);
+         va_list argsAux;
+         va_copy(argsAux, args);
+         vfprintf(fdAux, format, argsAux);
+         va_end(argsAux);
          fclose(fdAux);
       }
    }
 
    if ( NULL != fd )
-      vfprintf(fd, format, args);
+   {
+      va_list argsAux;
+      va_copy(argsAux, args);
+      vfprintf(fd, format, argsAux);
+      va_end(argsAux);
+   }
    if ( ! s_logDisabledStdout )
-      vprintf(format, args);
+   {
+      va_list argsAux;
+      va_copy(argsAux, args);
+      vprintf(format, argsAux);
+      va_end(argsAux);
+   }
 
    if ( 0 != s_szAdditionalLogFile[0] )
    {
@@ -797,15 +820,28 @@ void log_line_forced_to_file(const char* format, ...)
       FILE* fdAux = fopen(s_szAdditionalLogFile, "a+");
       if ( NULL != fdAux )
       {
-         vfprintf(fdAux, format, args);
+         va_list argsAux;
+         va_copy(argsAux, args);
+         vfprintf(fdAux, format, argsAux);
+         va_end(argsAux);
          fclose(fdAux);
       }
    }
 
    if ( NULL != fd )
-      vfprintf(fd, format, args);
+   {
+      va_list argsAux;
+      va_copy(argsAux, args);
+      vfprintf(fd, format, argsAux);
+      va_end(argsAux);
+   }
    if ( ! s_logDisabledStdout )
-      vprintf(format, args);
+   {
+      va_list argsAux;
+      va_copy(argsAux, args);
+      vprintf(format, argsAux);
+      va_end(argsAux);
+   }
 
    if ( 0 != s_szAdditionalLogFile[0] )
    {
@@ -837,6 +873,11 @@ void log_line_watchdog(const char* format, ...)
    va_list args;
    va_start(args, format);
 
+   // The argument list is consumed by every output below, so an independent
+   // copy is taken before the first use of it.
+   va_list argsCopy;
+   va_copy(argsCopy, args);
+
    char szTime[64];
    szTime[0] = 0;
    if ( s_logAddTime )
@@ -845,9 +886,10 @@ void log_line_watchdog(const char* format, ...)
    if ( _log_check_for_service_log_access() )
    {
       char szBuff[MAX_SERVICE_LOG_ENTRY_LENGTH];
-      vsnprintf(szBuff, MAX_SERVICE_LOG_ENTRY_LENGTH-1, format, args);
+      vsnprintf(szBuff, MAX_SERVICE_LOG_ENTRY_LENGTH-1, format, argsCopy);
       szBuff[MAX_SERVICE_LOG_ENTRY_LENGTH-1] = 0;
       _log_service_entry(szTime, szBuff);
+      va_end(argsCopy);
       va_end(args);
       return;
    }
@@ -872,11 +914,26 @@ void log_line_watchdog(const char* format, ...)
      fprintf(fd2, "%s %s: ", szTime, sszComponentName);  
 
    if ( NULL != fd )
-      vfprintf(fd, format, args);
+   {
+      va_list argsAux;
+      va_copy(argsAux, args);
+      vfprintf(fd, format, argsAux);
+      va_end(argsAux);
+   }
    if ( NULL != fd2 )
-      vfprintf(fd2, format, args);
+   {
+      va_list argsAux;
+      va_copy(argsAux, args);
+      vfprintf(fd2, format, argsAux);
+      va_end(argsAux);
+   }
    if ( ! s_logDisabledStdout )
-      vprintf(format, args);
+   {
+      va_list argsAux;
+      va_copy(argsAux, args);
+      vprintf(format, argsAux);
+      va_end(argsAux);
+   }
 
    if ( ! s_logDisabledStdout )
       printf("\n");
@@ -903,6 +960,11 @@ void log_line_commands(const char* format, ...)
    va_list args;
    va_start(args, format);
 
+   // The argument list is consumed by every output below, so an independent
+   // copy is taken before the first use of it.
+   va_list argsCopy;
+   va_copy(argsCopy, args);
+
    char szTime[64];
    szTime[0] = 0;
    if ( s_logAddTime )
@@ -911,9 +973,10 @@ void log_line_commands(const char* format, ...)
    if ( _log_check_for_service_log_access() )
    {
       char szBuff[MAX_SERVICE_LOG_ENTRY_LENGTH];
-      vsnprintf(szBuff, MAX_SERVICE_LOG_ENTRY_LENGTH-1, format, args);
+      vsnprintf(szBuff, MAX_SERVICE_LOG_ENTRY_LENGTH-1, format, argsCopy);
       szBuff[MAX_SERVICE_LOG_ENTRY_LENGTH-1] = 0;
       _log_service_entry(szTime, szBuff);
+      va_end(argsCopy);
       va_end(args);
       return;
    }
@@ -938,11 +1001,26 @@ void log_line_commands(const char* format, ...)
      fprintf(fd2, "%s %s: ", szTime, sszComponentName);  
 
    if ( NULL != fd )
-      vfprintf(fd, format, args);
+   {
+      va_list argsAux;
+      va_copy(argsAux, args);
+      vfprintf(fd, format, argsAux);
+      va_end(argsAux);
+   }
    if ( NULL != fd2 )
-      vfprintf(fd2, format, args);
+   {
+      va_list argsAux;
+      va_copy(argsAux, args);
+      vfprintf(fd2, format, argsAux);
+      va_end(argsAux);
+   }
    if ( ! s_logDisabledStdout )
-      vprintf(format, args);
+   {
+      va_list argsAux;
+      va_copy(argsAux, args);
+      vprintf(format, argsAux);
+      va_end(argsAux);
+   }
 
    if ( ! s_logDisabledStdout )
       printf("\n");
@@ -1352,6 +1430,11 @@ void log_error_and_alarm(const char* format, ...)
    va_list args;
    va_start(args, format);
 
+   // The argument list is consumed by every output below, so an independent
+   // copy is taken before the first use of it.
+   va_list argsCopy;
+   va_copy(argsCopy, args);
+
    char szTime[64];
    szTime[0] = 0;
    if ( s_logAddTime )
@@ -1360,9 +1443,10 @@ void log_error_and_alarm(const char* format, ...)
    if ( _log_check_for_service_log_access() )
    {
       char szBuff[MAX_SERVICE_LOG_ENTRY_LENGTH];
-      vsnprintf(szBuff, MAX_SERVICE_LOG_ENTRY_LENGTH-1, format, args);
+      vsnprintf(szBuff, MAX_SERVICE_LOG_ENTRY_LENGTH-1, format, argsCopy);
       szBuff[MAX_SERVICE_LOG_ENTRY_LENGTH-1] = 0;
       _log_service_entry_error(szTime, szBuff);
+      va_end(argsCopy);
       va_end(args);
       return;
    }
@@ -1402,17 +1486,35 @@ void log_error_and_alarm(const char* format, ...)
       FILE* fdAux = fopen(s_szAdditionalLogFile, "a+");
       if ( NULL != fdAux )
       {
-         vfprintf(fdAux, format, args);
+         va_list argsAux;
+         va_copy(argsAux, args);
+         vfprintf(fdAux, format, argsAux);
+         va_end(argsAux);
          fclose(fdAux);
       }
    }
 
    if ( ! s_logDisabledStdout )
-      vprintf(format, args);
+   {
+      va_list argsAux;
+      va_copy(argsAux, args);
+      vprintf(format, argsAux);
+      va_end(argsAux);
+   }
    if ( NULL != fd )
-      vfprintf(fd, format, args);
+   {
+      va_list argsAux;
+      va_copy(argsAux, args);
+      vfprintf(fd, format, argsAux);
+      va_end(argsAux);
+   }
    if ( NULL != fd2 )
-      vfprintf(fd2, format, args);
+   {
+      va_list argsAux;
+      va_copy(argsAux, args);
+      vfprintf(fd2, format, argsAux);
+      va_end(argsAux);
+   }
 
    if ( 0 != s_szAdditionalLogFile[0] )
    {
@@ -1453,6 +1555,11 @@ void log_softerror_and_alarm(const char* format, ...)
    va_list args;
    va_start(args, format);
 
+   // The argument list is consumed by every output below, so an independent
+   // copy is taken before the first use of it.
+   va_list argsCopy;
+   va_copy(argsCopy, args);
+
    char szTime[64];
    szTime[0] = 0;
    if ( s_logAddTime )
@@ -1461,9 +1568,10 @@ void log_softerror_and_alarm(const char* format, ...)
    if ( _log_check_for_service_log_access() )
    {
       char szBuff[MAX_SERVICE_LOG_ENTRY_LENGTH];
-      vsnprintf(szBuff, MAX_SERVICE_LOG_ENTRY_LENGTH-1, format, args);
+      vsnprintf(szBuff, MAX_SERVICE_LOG_ENTRY_LENGTH-1, format, argsCopy);
       szBuff[MAX_SERVICE_LOG_ENTRY_LENGTH-1] = 0;
       _log_service_entry_softerror(szTime, szBuff);
+      va_end(argsCopy);
       va_end(args);
       return;
    }
@@ -1503,17 +1611,35 @@ void log_softerror_and_alarm(const char* format, ...)
       FILE* fdAux = fopen(s_szAdditionalLogFile, "a+");
       if ( NULL != fdAux )
       {
-         vfprintf(fdAux, format, args);
+         va_list argsAux;
+         va_copy(argsAux, args);
+         vfprintf(fdAux, format, argsAux);
+         va_end(argsAux);
          fclose(fdAux);
       }
    }
 
    if ( ! s_logDisabledStdout )
-      vprintf(format, args);
+   {
+      va_list argsAux;
+      va_copy(argsAux, args);
+      vprintf(format, argsAux);
+      va_end(argsAux);
+   }
    if ( NULL != fd )
-      vfprintf(fd, format, args);
+   {
+      va_list argsAux;
+      va_copy(argsAux, args);
+      vfprintf(fd, format, argsAux);
+      va_end(argsAux);
+   }
    if ( NULL != fd2 )
-      vfprintf(fd2, format, args);
+   {
+      va_list argsAux;
+      va_copy(argsAux, args);
+      vfprintf(fd2, format, argsAux);
+      va_end(argsAux);
+   }
 
    if ( 0 != s_szAdditionalLogFile[0] )
    {
@@ -1611,6 +1737,17 @@ key_t generate_msgqueue_key(int iMsgQueueId)
          strcpy(szFile, "/tmp/ruby_start");
       else if ( access("/tmp/debug", R_OK) != -1 )
          strcpy(szFile, "/tmp/debug");
+   }
+   // ftok() fails with ENOENT if the file does not exist. The system log file
+   // is always present, so it is used as the key anchor when the logger
+   // binary is not installed.
+   if ( access(szFile, R_OK) == -1 )
+   {
+      strcpy(szFile, FOLDER_LOGS);
+      strcat(szFile, LOG_FILE_SYSTEM);
+      int fd = open(szFile, O_WRONLY | O_CREAT, 0644);
+      if ( fd >= 0 )
+         close(fd);
    }
    key_t key = ftok(szFile, iMsgQueueId);
 

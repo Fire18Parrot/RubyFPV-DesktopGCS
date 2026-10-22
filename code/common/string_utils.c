@@ -1739,10 +1739,12 @@ char* str_format_firmware_type(u32 uFirmwareType)
 {
    static char s_szFormatFirmwareType[32];
    s_szFormatFirmwareType[0] = 0;
- 
+
    if ( uFirmwareType == MODEL_FIRMWARE_TYPE_RUBY )
       strcpy(s_szFormatFirmwareType, "Ruby");
+   else if ( uFirmwareType == MODEL_FIRMWARE_TYPE_OPENIPC )
+      strcpy(s_szFormatFirmwareType, "OpenIPC");
    else
       strcpy(s_szFormatFirmwareType, "Unknown");
-   return s_szFormatFirmwareType;  
+   return s_szFormatFirmwareType;
 }

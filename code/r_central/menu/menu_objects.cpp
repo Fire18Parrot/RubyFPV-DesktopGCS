@@ -380,6 +380,25 @@ int Menu::getSelectedMenuItemIndex()
    return m_SelectedIndex;
 }
 
+int Menu::getItemsCount()
+{
+   return m_ItemsCount;
+}
+
+MenuItem* Menu::getMenuItem(int iIndex)
+{
+   if ( (iIndex < 0) || (iIndex >= m_ItemsCount) )
+      return NULL;
+   return m_pMenuItems[iIndex];
+}
+
+void Menu::setSelectedMenuItemIndex(int iIndex)
+{
+   if ( (iIndex < 0) || (iIndex >= m_ItemsCount) )
+      return;
+   m_SelectedIndex = iIndex;
+}
+
 void Menu::addSeparator()
 {
    if ( 0 == m_ItemsCount )

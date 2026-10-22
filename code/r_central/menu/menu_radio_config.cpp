@@ -47,6 +47,7 @@
 #include "menu_vehicle_radio_link_sik.h"
 #include "menu_vehicle_radio_interface.h"
 #include "menu_diagnose_radio_link.h"
+#include "menu_rf_profiles.h"
 
 #include <ctype.h>
 #include <math.h>
@@ -65,6 +66,7 @@
 #define MRC_ID_ROTATE_RADIO_LINKS 36
 #define MRC_ID_DISABLE_UPLINKS 37
 #define MRC_ID_DIAGNOSE_RADIO_LINK 40
+#define MRC_ID_RF_PROFILES 41
 
 MenuRadioConfig::MenuRadioConfig(void)
 :Menu(MENU_ID_RADIO_CONFIG, "Radio Configuration", NULL)
@@ -80,6 +82,7 @@ MenuRadioConfig::MenuRadioConfig(void)
    m_bGoToFirstRadioLinkOnShow = false;
    m_bHasSwapInterfacesCommand = false;
    m_bHasRotateRadioLinksOrderCommand = false;
+   m_bHasRFProfilesCommand = true;
    for( int i=0; i<MAX_RADIO_INTERFACES; i++ )
    {
       m_bHasSwitchRadioLinkCommand[i] = false;
@@ -231,6 +234,7 @@ void MenuRadioConfig::computeMenuItems()
 
    m_bHasSwapInterfacesCommand = false;
    m_bHasRotateRadioLinksOrderCommand = false;
+   m_bHasRFProfilesCommand = true;
 
    for( int i=0; i<MAX_RADIO_INTERFACES; i++ )
    {
@@ -425,6 +429,21 @@ void MenuRadioConfig::Render()
       g_pRenderEngine->drawTextLeft(xLeft, yEnd, m_iIdFontRegular, "Swap Vehicle's Radio Interfaces");
 
       if ( (m_uCommandsIds[m_iIndexCurrentItem] & 0xFF) == MRC_ID_SWAP_VEHICLE_RADIO_INTERFACES )
+         g_pRenderEngine->drawBackgroundBoundingBoxes(bBBox);
+
+      xLeft -= fWidthText + 2.0 * m_sfMenuPaddingX;
+   }
+
+   if ( m_bHasRFProfilesCommand )
+   {
+      bool bBBox = false;
+      if ( (m_uCommandsIds[m_iIndexCurrentItem] & 0xFF) == MRC_ID_RF_PROFILES )
+            bBBox = g_pRenderEngine->drawBackgroundBoundingBoxes(true);
+
+      float fWidthText = g_pRenderEngine->textWidth(m_iIdFontRegular, "RF Profiles");
+      g_pRenderEngine->drawTextLeft(xLeft, yEnd, m_iIdFontRegular, "RF Profiles");
+
+      if ( (m_uCommandsIds[m_iIndexCurrentItem] & 0xFF) == MRC_ID_RF_PROFILES )
          g_pRenderEngine->drawBackgroundBoundingBoxes(bBBox);
 
       xLeft -= fWidthText + 2.0 * m_sfMenuPaddingX;
@@ -705,6 +724,14 @@ void MenuRadioConfig::onSelectItem()
       log_line("User selected command to swap vehicle's radio interfaces.");
       if ( ! handle_commands_send_to_vehicle(COMMAND_ID_SWAP_RADIO_INTERFACES, 0, NULL, 0) )
          valuesToUI();
+      return;
+   }
+
+   if ( (m_uCommandsIds[m_iIndexCurrentItem] & 0xFF) == MRC_ID_RF_PROFILES )
+   {
+      log_line("MenuRadioConfig: User selected the RF profiles menu.");
+      Menu* pMenu = new MenuRFProfiles();
+      add_menu_to_stack(pMenu);
       return;
    }
 
@@ -1005,6 +1032,13 @@ void MenuRadioConfig::computeMaxItemIndexAndCommands()
    {
       setTooltip(m_iIndexMaxItem, "Rotate vehicle's radio links order. This doesn't change any radio links parameters.");
       m_uCommandsIds[m_iIndexMaxItem] = MRC_ID_ROTATE_RADIO_LINKS;
+      m_iIndexMaxItem++;
+   }
+
+   if ( m_bHasRFProfilesCommand )
+   {
+      setTooltip(m_iIndexMaxItem, "Manage the named RF profiles (interface, band, frequency, channel, bandwidth and TX power).");
+      m_uCommandsIds[m_iIndexMaxItem] = MRC_ID_RF_PROFILES;
       m_iIndexMaxItem++;
    }
 

@@ -356,6 +356,15 @@ int _process_received_ruby_message(int iRuntimeIndex, int iInterfaceIndex, u8* p
       if ( pPH->total_length > sizeof(t_packet_header) + 2*sizeof(u8) + sizeof(u32) )
          memcpy(&uReplyVehicleLocalRadioLinkId, pPacketBuffer + sizeof(t_packet_header)+2*sizeof(u8) + sizeof(u32), sizeof(u8));
 
+      // The local radio link id is echoed by the vehicle: it is used as an
+      // index in the link state arrays of the vehicle, so it must be checked.
+      if ( uOriginalLocalRadioLinkId >= MAX_RADIO_INTERFACES )
+      {
+         log_softerror_and_alarm("Received a ping reply with an invalid local radio link id %u, it must be less than %d.",
+            uOriginalLocalRadioLinkId, MAX_RADIO_INTERFACES);
+         return 0;
+      }
+
       g_TimeNow = get_current_timestamp_ms();
       u32 uRoundtripMilis = g_TimeNow - g_State.vehiclesRuntimeInfo[iRuntimeIndex].uTimeLastPingSentToVehicleOnLocalRadioLinks[uOriginalLocalRadioLinkId];
       if ( uPingId == g_State.vehiclesRuntimeInfo[iRuntimeIndex].uLastPingIdSentToVehicleOnLocalRadioLinks[uOriginalLocalRadioLinkId] )
@@ -393,14 +402,27 @@ int _process_received_ruby_message(int iRuntimeIndex, int iInterfaceIndex, u8* p
    }
 
    if ( uPacketType == PACKET_TYPE_RUBY_LOG_FILE_SEGMENT )
-   if ( iTotalLength >= (int)sizeof(t_packet_header) )
+   if ( iTotalLength >= (int)(sizeof(t_packet_header) + sizeof(t_packet_header_file_segment)) )
    {
       t_packet_header_file_segment* pPHFS = (t_packet_header_file_segment*)(pPacketBuffer + sizeof(t_packet_header));
       log_line("Received a log file segment: file id: %d, segment size: %d, segment index: %d", pPHFS->file_id, (int)pPHFS->segment_size, (int)pPHFS->segment_index);
       if ( pPHFS->file_id == FILE_ID_VEHICLE_LOG )
       {
+         // The size of the segment is sent by the vehicle: it must fit in the
+         // received packet, it cannot be used as it is.
+         int iSegmentSizeMax = iTotalLength - (int)(sizeof(t_packet_header) + sizeof(t_packet_header_file_segment));
+         if ( pPHFS->segment_size > (u32)iSegmentSizeMax )
+         {
+            log_softerror_and_alarm("Received a log file segment with an invalid size %u: the packet has %d bytes of segment data.",
+               pPHFS->segment_size, iSegmentSizeMax);
+            return 0;
+         }
+
+         if ( NULL == g_pCurrentModel )
+            return 0;
+
          char szFile[128];
-         snprintf(szFile, sizeof(szFile)/sizeof(szFile[0]), LOG_FILE_VEHICLE, g_pCurrentModel->getShortName());      
+         snprintf(szFile, sizeof(szFile)/sizeof(szFile[0]), LOG_FILE_VEHICLE, g_pCurrentModel->getShortName());
          char szPath[256];
          strcpy(szPath, FOLDER_LOGS);
          strcat(szPath, szFile);

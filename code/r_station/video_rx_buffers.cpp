@@ -123,6 +123,10 @@ bool VideoRxPacketsBuffer::_check_allocate_video_block_in_buffer(int iBufferInde
    if ( (iBufferIndex < 0) || (iBufferIndex >= MAX_RXTX_BLOCKS_BUFFER) )
       return false;
 
+   // The block buffers have room for MAX_TOTAL_PACKETS_IN_BLOCK packets only.
+   if ( m_VideoBlocks[iBufferIndex].iBlockDataPackets + m_VideoBlocks[iBufferIndex].iBlockECPackets > MAX_TOTAL_PACKETS_IN_BLOCK )
+      return false;
+
    for( int i=0; i<m_VideoBlocks[iBufferIndex].iBlockDataPackets + m_VideoBlocks[iBufferIndex].iBlockECPackets; i++ )
    {
       if ( NULL != m_VideoBlocks[iBufferIndex].packets[i].pRawData )
@@ -346,9 +350,69 @@ bool VideoRxPacketsBuffer::_add_video_packet_to_buffer(int iBufferIndex, u8* pPa
    if ( (NULL == pPacket) || (iPacketLength < (int)(sizeof(t_packet_header)+sizeof(t_packet_header_video_segment) + sizeof(t_packet_header_video_segment_important))) || (iBufferIndex < 0) || (iBufferIndex >= MAX_RXTX_BLOCKS_BUFFER) )
       return false;
 
+   // The raw data buffer of a packet is MAX_PACKET_TOTAL_SIZE bytes.
+   if ( iPacketLength > MAX_PACKET_TOTAL_SIZE )
+      return false;
+
    t_packet_header* pPH = (t_packet_header*)pPacket;
    t_packet_header_video_segment* pPHVS = (t_packet_header_video_segment*)(pPacket + sizeof(t_packet_header));
    t_packet_header_video_segment_important* pPHVSImp = (t_packet_header_video_segment_important*)(pPacket + sizeof(t_packet_header) + sizeof(t_packet_header_video_segment));
+
+   // The packet index, the block scheme and the video data length come from
+   // the radio link. They are used as array indexes, as loop bounds and as
+   // byte counts, so they have to be checked before they are used: a
+   // malformed or a corrupted packet must not be able to write or to read
+   // outside the block buffers.
+   if ( pPHVS->uCurrentBlockPacketIndex >= MAX_TOTAL_PACKETS_IN_BLOCK )
+   {
+      log_softerror_and_alarm("[VideoRXBuffer] Invalid video packet index %u in block %u: it must be less than %d",
+         pPHVS->uCurrentBlockPacketIndex, pPHVS->uCurrentBlockIndex, MAX_TOTAL_PACKETS_IN_BLOCK);
+      return false;
+   }
+
+   if ( (0 == pPHVS->uCurrentBlockDataPackets) ||
+        ((int)pPHVS->uCurrentBlockDataPackets + (int)pPHVS->uCurrentBlockECPackets > MAX_TOTAL_PACKETS_IN_BLOCK) )
+   {
+      log_softerror_and_alarm("[VideoRXBuffer] Invalid video block scheme [%u+%u] in block %u: it must be at most %d packets",
+         pPHVS->uCurrentBlockDataPackets, pPHVS->uCurrentBlockECPackets, pPHVS->uCurrentBlockIndex, MAX_TOTAL_PACKETS_IN_BLOCK);
+      return false;
+   }
+
+   if ( (pPHVS->uCurrentBlockPacketSize < (u16)sizeof(t_packet_header_video_segment_important)) ||
+        (pPHVS->uCurrentBlockPacketSize > (u16)MAX_PACKET_TOTAL_SIZE) )
+   {
+      log_softerror_and_alarm("[VideoRXBuffer] Invalid video block packet size %u in block %u",
+         pPHVS->uCurrentBlockPacketSize, pPHVS->uCurrentBlockIndex);
+      return false;
+   }
+
+   if ( pPHVS->uCurrentBlockPacketIndex < pPHVS->uCurrentBlockDataPackets )
+   {
+      // The video data length must fit in the received packet. This is valid
+      // only for the data packets: on the EC packets the video data area
+      // holds the FEC parity block (written by the vehicle side over the
+      // important header), so the length there is not a video data length.
+      int iVideoDataMax = iPacketLength - (int)(sizeof(t_packet_header) + sizeof(t_packet_header_video_segment) +
+            sizeof(t_packet_header_video_segment_important));
+      if ( pPHVSImp->uVideoDataLength > iVideoDataMax )
+      {
+         log_softerror_and_alarm("[VideoRXBuffer] Invalid video data length %u in block %u: the packet has %d bytes of video data",
+            pPHVSImp->uVideoDataLength, pPHVS->uCurrentBlockIndex, iVideoDataMax);
+         return false;
+      }
+   }
+   else
+   {
+      // The EC packet must carry the whole parity block: the FEC decoder reads
+      // the block data size bytes starting at the important header offset.
+      int iECMinLength = (int)(sizeof(t_packet_header) + sizeof(t_packet_header_video_segment)) + (int)pPHVS->uCurrentBlockPacketSize;
+      if ( iPacketLength < iECMinLength )
+      {
+         log_softerror_and_alarm("[VideoRXBuffer] Invalid EC packet length %d in block %u: it must be at least %d bytes",
+            iPacketLength, pPHVS->uCurrentBlockIndex, iECMinLength);
+         return false;
+      }
+   }
 
    if ( NULL != m_VideoBlocks[iBufferIndex].packets[pPHVS->uCurrentBlockPacketIndex].pRawData )
    if ( ! m_VideoBlocks[iBufferIndex].packets[pPHVS->uCurrentBlockPacketIndex].bEmpty )
@@ -390,7 +454,7 @@ bool VideoRxPacketsBuffer::_add_video_packet_to_buffer(int iBufferIndex, u8* pPa
       m_VideoBlocks[iBufferIndex].iBlockDataPackets = pPHVS->uCurrentBlockDataPackets;
       m_VideoBlocks[iBufferIndex].iBlockECPackets = pPHVS->uCurrentBlockECPackets;
 
-      for(u8 u=0; u<pPHVS->uCurrentBlockDataPackets+pPHVS->uCurrentBlockECPackets; u++)
+      for(int u=0; u<(int)pPHVS->uCurrentBlockDataPackets+(int)pPHVS->uCurrentBlockECPackets; u++)
       {
          if ( NULL != m_VideoBlocks[iBufferIndex].packets[u].pRawData )
          {
@@ -448,6 +512,10 @@ bool VideoRxPacketsBuffer::_add_video_packet_to_buffer(int iBufferIndex, u8* pPa
 bool VideoRxPacketsBuffer::hasVideoPacket(u32 uVideoBlockIndex, u32 uVideoBlockPacketIndex)
 {
    if ( m_bBuffersEmpty )
+      return false;
+   // The packet index comes from the radio link: it must be checked before it
+   // is used as an index in the block buffers.
+   if ( uVideoBlockPacketIndex >= MAX_TOTAL_PACKETS_IN_BLOCK )
       return false;
    if ( (-1 != m_iTopBufferIndex) && (uVideoBlockIndex > m_VideoBlocks[m_iTopBufferIndex].uVideoBlockIndex) )
       return false;

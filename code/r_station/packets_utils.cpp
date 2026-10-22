@@ -123,14 +123,25 @@ void* _thread_set_tx_power_async(void *argument)
          if ( (NULL == pRadioHWInfo) || (! pRadioHWInfo->isConfigurable) )
             continue;
 
+         // The status of the command is checked: a command that produced no
+         // error text is not a proof that the TX power was applied.
+         int iPowerSet = 0;
          if ( hardware_radio_driver_is_rtl8812au_card(pRadioHWInfo->iRadioDriver) )
-            hardware_radio_set_txpower_raw_rtl8812au(iInterface, iRawPower);
-         if ( hardware_radio_driver_is_rtl8812eu_card(pRadioHWInfo->iRadioDriver) )
-            hardware_radio_set_txpower_raw_rtl8812eu(iInterface, iRawPower);
-         if ( hardware_radio_driver_is_rtl8733bu_card(pRadioHWInfo->iRadioDriver) )
-            hardware_radio_set_txpower_raw_rtl8733bu(iInterface, iRawPower);
-         if ( hardware_radio_driver_is_atheros_card(pRadioHWInfo->iRadioDriver) )
-            hardware_radio_set_txpower_raw_atheros(iInterface, iRawPower);
+            iPowerSet = hardware_radio_set_txpower_raw_rtl8812au(iInterface, iRawPower);
+         else if ( hardware_radio_driver_is_rtl8812eu_card(pRadioHWInfo->iRadioDriver) )
+            iPowerSet = hardware_radio_set_txpower_raw_rtl8812eu(iInterface, iRawPower);
+         else if ( hardware_radio_driver_is_rtl8733bu_card(pRadioHWInfo->iRadioDriver) )
+            iPowerSet = hardware_radio_set_txpower_raw_rtl8733bu(iInterface, iRawPower);
+         else if ( hardware_radio_driver_is_atheros_card(pRadioHWInfo->iRadioDriver) )
+            iPowerSet = hardware_radio_set_txpower_raw_atheros(iInterface, iRawPower);
+
+         if ( ! iPowerSet )
+         {
+            log_softerror_and_alarm("[ThreadTxPower] Failed to set the raw TX power %d of radio interface %d (%s).",
+               iRawPower, iInterface, pRadioHWInfo->szName);
+            // the power was not applied, the same value has to be retried
+            iLastRawTxPowerPerRadioInterface[iInterface] = 0;
+         }
       }
    }
    log_line("[ThreadTxPower] Thread ended.");
@@ -447,7 +458,12 @@ int _compute_packet_uplink_datarate_radioflags_tx_power(int iVehicleRadioLink, i
    {
       if ( g_State.vehiclesRuntimeInfo[iRuntimeIndex].bIsVehicleFastUplinkFromControllerLost )
          bUseLowestDR = true;
-      if ( g_State.vehiclesRuntimeInfo[iRuntimeIndex].uLastTimeReceivedAckFromVehicle > g_TimeNow + 1000 )
+      // If the vehicle stopped acknowledging, the uplink is backed off to the
+      // lowest datarate. The time of the last acknowledgement is a time in
+      // the past: the link is lost if the acknowledgement is older than one
+      // second. The check is skipped if no acknowledgement was received yet.
+      if ( 0 != g_State.vehiclesRuntimeInfo[iRuntimeIndex].uLastTimeReceivedAckFromVehicle )
+      if ( g_TimeNow > g_State.vehiclesRuntimeInfo[iRuntimeIndex].uLastTimeReceivedAckFromVehicle + 1000 )
          bUseLowestDR = true;
    }
 
@@ -704,6 +720,11 @@ int send_packet_to_radio_interfaces(u8* pPacketData, int nPacketLength, int iSen
    u32 uDestVehicleId = pPH->vehicle_id_dest;
    u32 uStreamId = (pPH->stream_packet_idx) >> PACKET_FLAGS_MASK_SHIFT_STREAM_INDEX;
 
+   // The stream id is used as an index in the per stream counters, so it must
+   // be checked. The same clamp is done by radio_packet_init().
+   if ( uStreamId >= MAX_RADIO_STREAMS )
+      uStreamId = MAX_RADIO_STREAMS-1;
+
    if ( pPH->packet_type == PACKET_TYPE_RUBY_PING_CLOCK )
    {
       u8 uLocalRadioLinkId = 0;
@@ -751,6 +772,12 @@ int send_packet_to_radio_interfaces(u8* pPacketData, int nPacketLength, int iSen
          }
          continue;
       }
+
+      // The vehicle radio link id is -1 if the local radio link is not
+      // assigned to a vehicle radio link yet. It is used as an index in the
+      // radio links parameters of the model, so it must be checked.
+      if ( (iVehicleRadioLinkId < 0) || (iVehicleRadioLinkId >= g_pCurrentModel->radioLinksParams.links_count) )
+         continue;
 
       if ( (-1 != iSendToSingleRadioLink) && (iLocalRadioLinkId != iSendToSingleRadioLink) )
          continue;

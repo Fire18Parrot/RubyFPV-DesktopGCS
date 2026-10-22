@@ -34,6 +34,7 @@
 #include <pthread.h>
 #include "../base/config.h"
 #include "../base/hardware.h"
+#include "../base/hardware_radio.h"
 #include "../base/hardware_procs.h"
 #include "../base/ctrl_interfaces.h"
 #include "../base/ctrl_settings.h"
@@ -44,8 +45,36 @@
 #include "shared_vars.h"
 #include "popup.h"
 
+#ifdef HW_PLATFORM_LINUX_GENERIC
+// The desktop build normally has no local radio hardware, so the router
+// process (which drives the radio interfaces) is not started.
+// The exception is a radio that the ground station can actually use: a serial
+// radio (SiK / ELRS), that talks to the radio over an ordinary serial device
+// and therefore does NOT need CAP_NET_RAW nor a Wi-Fi card in monitor mode, or
+// a supported Wi-Fi card, that is put in monitor mode and captured with
+// libpcap. If such a radio is actually detected, the real router/station
+// process has to run, otherwise no command and no video could ever reach the
+// ground station.
+// The same rule is used by the start script, so that the two do not
+// disagree about what is expected to be running.
+static int _desktop_has_usable_radio()
+{
+   return hardware_radio_has_usable_radios();
+}
+#endif
+
 void controller_launch_router(bool bSearchMode, int iFirmwareType)
 {
+#ifdef HW_PLATFORM_LINUX_GENERIC
+   if ( ! _desktop_has_usable_radio() )
+   {
+      // The desktop build has no local radio hardware, so the router process
+      // (which drives the radio interfaces) is not started.
+      log_line("Desktop build: not starting the controller router process.");
+      return;
+   }
+   log_line("Desktop build: detected a usable radio, starting the controller router process.");
+#endif
    log_line("Starting controller router (%s)", bSearchMode?"in search mode":"in normal mode");
    if ( hw_process_exists("ruby_rt_station") )
    {
@@ -60,30 +89,30 @@ void controller_launch_router(bool bSearchMode, int iFirmwareType)
    if ( bSearchMode )
    {
    
-      if ( (g_iSearchSiKAirDataRate >= 0) && (iFirmwareType == MODEL_FIRMWARE_TYPE_RUBY) )
+      if ( (g_iSearchSiKAirDataRate >= 0) && (iFirmwareType == MODEL_FIRMWARE_TYPE_RUBY || iFirmwareType == MODEL_FIRMWARE_TYPE_OPENIPC) )
       {
          if ( g_pControllerSettings->iPrioritiesAdjustment && (g_pControllerSettings->iThreadPriorityRouter > 100) )
-            sprintf(szPrefix, "nice -n %d", g_pControllerSettings->iThreadPriorityRouter - 120);
+            sprintf(szPrefix, "nice -n %d", hw_get_nice_value_for_raw_priority(g_pControllerSettings->iThreadPriorityRouter));
          sprintf(szParams, "-search %d -sik %d %d %d %d",
             g_iSearchFrequency, g_iSearchSiKAirDataRate, g_iSearchSiKECC, g_iSearchSiKLBT, g_iSearchSiKMCSTR);
       }
       else
       {
          if ( g_pControllerSettings->iPrioritiesAdjustment && (g_pControllerSettings->iThreadPriorityRouter > 100) )
-            sprintf(szPrefix, "nice -n %d", g_pControllerSettings->iThreadPriorityRouter - 120);
+            sprintf(szPrefix, "nice -n %d", hw_get_nice_value_for_raw_priority(g_pControllerSettings->iThreadPriorityRouter));
          sprintf(szParams, "-search %d -firmware %d", g_iSearchFrequency, iFirmwareType);
       }
    }
    else
    {
       if ( g_pControllerSettings->iPrioritiesAdjustment && (g_pControllerSettings->iThreadPriorityRouter > 100) )
-         sprintf(szPrefix, "nice -n %d", g_pControllerSettings->iThreadPriorityRouter - 120);    
+         sprintf(szPrefix, "nice -n %d", hw_get_nice_value_for_raw_priority(g_pControllerSettings->iThreadPriorityRouter));
       #ifdef HW_CAPABILITY_IONICE
       if ( g_pControllerSettings->iPrioritiesAdjustment && (g_pControllerSettings->ioNiceRouter > 0) )
       {
          sprintf(szPrefix, "ionice -c 1 -n %d", g_pControllerSettings->ioNiceRouter);
          if ( g_pControllerSettings->iPrioritiesAdjustment && (g_pControllerSettings->iThreadPriorityRouter > 100) )
-            sprintf(szPrefix, "ionice -c 1 -n %d nice -n %d", g_pControllerSettings->ioNiceRouter, g_pControllerSettings->iThreadPriorityRouter - 120);
+            sprintf(szPrefix, "ionice -c 1 -n %d nice -n %d", g_pControllerSettings->ioNiceRouter, hw_get_nice_value_for_raw_priority(g_pControllerSettings->iThreadPriorityRouter));
       }
       #endif
    }
@@ -102,6 +131,20 @@ void controller_stop_router()
 
 void controller_launch_rx_telemetry()
 {
+#ifdef HW_PLATFORM_LINUX_GENERIC
+   // The telemetry receiver process handles the telemetry of a serial radio
+   // (SiK / ELRS), that the router forwards to it. A Wi-Fi card carries the
+   // telemetry in the radio link itself, handled by the router, so this
+   // process is started only when there is a serial radio.
+   if ( ! hardware_radio_has_serial_radios() )
+   {
+      // The desktop build has no local radio hardware, so the telemetry receiver
+      // process is not started.
+      log_line("Desktop build: not starting the rx telemetry process.");
+      return;
+   }
+   log_line("Desktop build: detected a serial radio, starting the rx telemetry process.");
+#endif
    if ( hw_process_exists("ruby_rx_telemetry") )
    {
       log_line("ruby_rx_telemetry process already running. Do nothing.");
@@ -110,7 +153,7 @@ void controller_launch_rx_telemetry()
    char szPrefix[32];
    szPrefix[0] = 0;
    if ( g_pControllerSettings->iPrioritiesAdjustment && (g_pControllerSettings->iThreadPriorityOthers > 100) )
-      sprintf(szPrefix, "nice -n %d", g_pControllerSettings->iThreadPriorityOthers - 120);
+      sprintf(szPrefix, "nice -n %d", hw_get_nice_value_for_raw_priority(g_pControllerSettings->iThreadPriorityOthers));
    hw_execute_ruby_process(szPrefix, "ruby_rx_telemetry", NULL, NULL);
 }
 
@@ -121,6 +164,12 @@ void controller_stop_rx_telemetry()
 
 void controller_launch_tx_rc()
 {
+#ifdef HW_PLATFORM_LINUX_GENERIC
+   // The desktop build has no local radio hardware, so the RC transmitter
+   // process is not started.
+   log_line("Desktop build: not starting the tx rc process.");
+   return;
+#else
    if ( hw_process_exists("ruby_tx_rc") )
    {
       log_line("ruby_tx_rc process already running. Do nothing.");
@@ -136,7 +185,7 @@ void controller_launch_tx_rc()
       sprintf(szParams, "-search");
 
    if ( g_pControllerSettings->iPrioritiesAdjustment && (g_pControllerSettings->iThreadPriorityRC > 100) )
-      sprintf(szPrefix, "nice -n %d", g_pControllerSettings->iThreadPriorityRC - 120);
+      sprintf(szPrefix, "nice -n %d", hw_get_nice_value_for_raw_priority(g_pControllerSettings->iThreadPriorityRC));
 
    #ifdef HW_CAPABILITY_IONICE
    if ( g_pControllerSettings->iPrioritiesAdjustment && (NULL != g_pCurrentModel) )
@@ -144,11 +193,12 @@ void controller_launch_tx_rc()
    {
       sprintf(szPrefix, "ionice -c 1 -n %d", DEFAULT_IO_PRIORITY_RC);
       if ( g_pControllerSettings->iPrioritiesAdjustment && (g_pControllerSettings->iThreadPriorityRC > 100) )
-         sprintf(szPrefix, "ionice -c 1 -n %d nice -n %d", DEFAULT_IO_PRIORITY_RC, g_pControllerSettings->iThreadPriorityRC - 120);
+         sprintf(szPrefix, "ionice -c 1 -n %d nice -n %d", DEFAULT_IO_PRIORITY_RC, hw_get_nice_value_for_raw_priority(g_pControllerSettings->iThreadPriorityRC));
    }
    #endif
 
    hw_execute_ruby_process(szPrefix, "ruby_tx_rc", szParams, NULL);
+#endif
 }
 
 void controller_stop_tx_rc()
@@ -247,12 +297,19 @@ const char* controller_validate_radio_settings(Model* pModel, u32* pVehicleNICFr
 
 void controller_start_i2c()
 {
+#ifdef HW_PLATFORM_LINUX_GENERIC
+   // The desktop build has no local I2C bus, so the I2C helper process is
+   // not started.
+   log_line("[Launcher] Desktop build: not starting the I2C helper process.");
+   return;
+#else
    char szPrefix[64];
    szPrefix[0] = 0;
 
    if ( g_pControllerSettings->iPrioritiesAdjustment && (g_pControllerSettings->iThreadPriorityOthers > 100) )
-      sprintf(szPrefix, "nice -n %d", g_pControllerSettings->iThreadPriorityOthers - 120);
+      sprintf(szPrefix, "nice -n %d", hw_get_nice_value_for_raw_priority(g_pControllerSettings->iThreadPriorityOthers));
    hw_execute_ruby_process(szPrefix, "ruby_i2c", NULL, NULL);
+#endif
 }
 
 void controller_stop_i2c()
@@ -296,8 +353,11 @@ void controller_wait_for_stop_all()
    if ( ! _controller_wait_for_stop_process("ruby_tx_rc") )
       log_softerror_and_alarm("Failed to wait for stopping: ruby_tx_rc");
 
-   if ( ! _controller_wait_for_stop_process("ruby_rt_router") )
-      log_softerror_and_alarm("Failed to wait for stopping: ruby_rt_router");
+   // The name of the router process is ruby_rt_station, the same name that is
+   // used to start it and to stop it. Waiting for a process that does not
+   // exist would report a failure that is not real.
+   if ( ! _controller_wait_for_stop_process("ruby_rt_station") )
+      log_softerror_and_alarm("Failed to wait for stopping: ruby_rt_station");
 
    log_line("All pairing processes have finished and exited.");
 }

@@ -7,6 +7,8 @@
 #define HW_PLATFORM_OPENIPC_CAMERA
 #elif defined(RUBY_BUILD_HW_PLATFORM_RADXA)
 #define HW_PLATFORM_RADXA
+#elif defined(RUBY_BUILD_HW_PLATFORM_DESKTOP)
+#define HW_PLATFORM_LINUX_GENERIC
 #else
 #define HW_PLATFORM_RASPBERRY
 #endif
@@ -43,4 +45,9 @@
 #ifdef HW_PLATFORM_RADXA
 #define HW_CAPABILITY_GPIO
 #define HW_CAPABILITY_I2C
+#endif
+
+#ifdef HW_PLATFORM_LINUX_GENERIC
+// Desktop: no physical GPIO/I2C, but we keep the symbols for conditional compilation
+// SDL2 handles input (keyboard/mouse/joystick)
 #endif

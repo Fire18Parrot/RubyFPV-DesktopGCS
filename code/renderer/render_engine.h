@@ -101,6 +101,11 @@ class RenderEngine
 
      virtual void startFrame();
      virtual void endFrame();
+     // Poll the window system for the pending input events. On the desktop
+     // build this is where the SDL2 events are read, so that the key presses
+     // are picked up as soon as possible.
+     virtual void pollEvents();
+
      virtual bool isFrameStarted();
 
      virtual void rotate180();

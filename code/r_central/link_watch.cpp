@@ -110,10 +110,10 @@ void* _thread_link_watch(void *argument)
       s_bLinkWatchMarkedRestartNeeded = false;
 
       szOutput[0] = 0;
-      hw_execute_bash_command_silent("dmesg | grep \"USB disconnect\"", szOutput);
+      hw_execute_bash_command_silent("dmesg | grep \"USB disconnect\" 2>/dev/null", szOutput);
       if ( NULL == strstr(szOutput, "USB disconnect") )
       {
-        hw_execute_bash_command_silent("dmesg -C", NULL);
+        hw_execute_bash_command_silent("dmesg -C 2>/dev/null", NULL);
         continue;
       }
       
@@ -138,7 +138,7 @@ void* _thread_link_watch(void *argument)
          else
          {
             s_bLinkWatchMarkedRestartNeeded = true;
-            hw_execute_bash_command_silent("dmesg -C", NULL);
+            hw_execute_bash_command_silent("dmesg -C 2>/dev/null", NULL);
          }
       }
       else

@@ -40,6 +40,8 @@
 #include "../base/hardware_radio_sik.h"
 #include "../base/hardware_radio_serial.h"
 #include "../base/hardware_procs.h"
+#include "../base/radio_capabilities.h"
+#include "../base/radio_profiles.h"
 #include "../base/radio_utils.h"
 #include "../common/string_utils.h"
 #include "../common/radio_stats.h"
@@ -63,54 +65,51 @@ int radio_links_has_failed_interfaces()
    return s_iFailedInitRadioInterface;
 }
 
-void radio_links_reinit_radio_interfaces()
+// Restarts the services that manage the network interfaces of the machine.
+// On a generic Linux desktop the station can be running on the same machine
+// that provides the network connection of the user: stopping or restarting the
+// network service would drop that connection. On such systems the service is
+// left alone and only the RubyFPV radio interfaces are cycled.
+static void _radio_links_restart_network_service()
 {
-   char szComm[256];
-   
-   radio_links_close_rxtx_radio_interfaces();
-   
-   send_alarm_to_central(ALARM_ID_GENERIC_STATUS_UPDATE, ALARM_FLAG_GENERIC_STATUS_RECONFIGURING_RADIO_INTERFACE, 0);
-
-   hardware_radio_remove_stored_config();
-   
-   hw_execute_bash_command("/etc/init.d/udev restart", NULL);
-   hardware_sleep_ms(200);
+   #ifdef HW_PLATFORM_LINUX_GENERIC
+   log_line("Not restarting the system network service (generic Linux platform, the network connection of the machine must be preserved).");
+   #else
    hw_execute_bash_command("sudo systemctl restart networking", NULL);
    hardware_sleep_ms(200);
    //hw_execute_bash_command("sudo ifconfig -a", NULL);
    hw_execute_bash_command("sudo ip link", NULL);
-
    hardware_sleep_ms(50);
-
    hw_execute_bash_command("sudo systemctl stop networking", NULL);
    hardware_sleep_ms(200);
    //hw_execute_bash_command("sudo ifconfig -a", NULL);
    hw_execute_bash_command("sudo ip link", NULL);
-
    hardware_sleep_ms(50);
+   #endif
+}
 
-   if ( NULL != g_pProcessStats )
+// Brings down or up the network interfaces that are used as RubyFPV radios.
+// On a generic Linux desktop only the interfaces that were detected as
+// RubyFPV radios are cycled: any other interface of the machine could be
+// carrying the network connection of the user.
+static void _radio_links_cycle_radio_interfaces(int iDown)
+{
+   #ifdef HW_PLATFORM_LINUX_GENERIC
+   char szComm[256];
+   for( int i=0; i<hardware_get_radio_interfaces_count(); i++ )
    {
-      g_TimeNow = get_current_timestamp_ms();
-      g_pProcessStats->lastActiveTime = g_TimeNow;
-      g_pProcessStats->lastIPCIncomingTime = g_TimeNow;
+      radio_hw_info_t* pRadioHWInfo = hardware_get_radio_info(i);
+      if ( NULL == pRadioHWInfo )
+         continue;
+      if ( ! pRadioHWInfo->isSupported )
+         continue;
+      if ( ! hardware_radio_is_wifi_radio(pRadioHWInfo) )
+         continue;
+      sprintf(szComm, "ip link set dev %s %s", pRadioHWInfo->szName, iDown ? "down" : "up");
+      hw_execute_bash_command(szComm, NULL);
+      hardware_sleep_ms(50);
    }
-
-   char szOutput[4096];
-   szOutput[0] = 0;
-   //hw_execute_bash_command_raw("sudo ifconfig -a | grep wlan", szOutput);
-   hw_execute_bash_command_raw("sudo ip link | grep wlan", NULL);
-
-   if ( NULL != g_pProcessStats )
-   {
-      g_TimeNow = get_current_timestamp_ms();
-      g_pProcessStats->lastActiveTime = g_TimeNow;
-      g_pProcessStats->lastIPCIncomingTime = g_TimeNow;
-   }
-
-   log_line("Reinitializing radio interfaces: found interfaces on ip link: [%s]", szOutput);
-   hardware_radio_remove_stored_config();
-   
+   #else
    //hw_execute_bash_command("ifconfig wlan0 down", NULL);
    //hw_execute_bash_command("ifconfig wlan1 down", NULL);
    //hw_execute_bash_command("ifconfig wlan2 down", NULL);
@@ -129,6 +128,73 @@ void radio_links_reinit_radio_interfaces()
    hw_execute_bash_command("ip link set dev wlan1 up", NULL);
    hw_execute_bash_command("ip link set dev wlan2 up", NULL);
    hw_execute_bash_command("ip link set dev wlan3 up", NULL);
+   #endif
+}
+
+void radio_links_reinit_radio_interfaces()
+{
+   char szComm[256];
+
+   // The reinitialization is triggered by the radio interface errors. If the
+   // interface can not be opened at all (missing privileges, unsupported
+   // driver, ...) the errors keep coming and each of them would trigger a
+   // full reinitialization. Rate limit it, to avoid a reinitialization loop.
+   static u32 s_uTimeLastReinitRadioInterfaces = 0;
+   static int s_bReinitRadioInterfacesDone = 0;
+   u32 uTimeNow = get_current_timestamp_ms();
+   if ( s_bReinitRadioInterfacesDone && (uTimeNow < s_uTimeLastReinitRadioInterfaces + 10000) )
+   {
+      log_line("Radio interfaces reinitialization skipped, the last one was less than 10 seconds ago.");
+      return;
+   }
+   s_bReinitRadioInterfacesDone = 1;
+   s_uTimeLastReinitRadioInterfaces = uTimeNow;
+
+   radio_links_close_rxtx_radio_interfaces();
+
+   send_alarm_to_central(ALARM_ID_GENERIC_STATUS_UPDATE, ALARM_FLAG_GENERIC_STATUS_RECONFIGURING_RADIO_INTERFACE, 0);
+
+   hardware_radio_remove_stored_config();
+
+   #ifndef HW_PLATFORM_LINUX_GENERIC
+   // Restarting udev is needed on the embedded platforms to re-enumerate the
+   // USB radios. On a generic Linux desktop the udev service is managed by
+   // the system and it is not restarted from here.
+   hw_execute_bash_command("/etc/init.d/udev restart", NULL);
+   hardware_sleep_ms(200);
+   #endif
+   _radio_links_restart_network_service();
+
+   if ( NULL != g_pProcessStats )
+   {
+      g_TimeNow = get_current_timestamp_ms();
+      g_pProcessStats->lastActiveTime = g_TimeNow;
+      g_pProcessStats->lastIPCIncomingTime = g_TimeNow;
+   }
+
+   char szOutput[4096];
+   szOutput[0] = 0;
+   //hw_execute_bash_command_raw("sudo ifconfig -a | grep wlan", szOutput);
+   #ifdef HW_PLATFORM_LINUX_GENERIC
+   // The listing does not need any privilege. Using sudo here would block the
+   // station waiting for a password on a system without unattended sudo.
+   hw_execute_bash_command_raw("ip link | grep wlan", NULL);
+   #else
+   hw_execute_bash_command_raw("sudo ip link | grep wlan", NULL);
+   #endif
+
+   if ( NULL != g_pProcessStats )
+   {
+      g_TimeNow = get_current_timestamp_ms();
+      g_pProcessStats->lastActiveTime = g_TimeNow;
+      g_pProcessStats->lastIPCIncomingTime = g_TimeNow;
+   }
+
+   log_line("Reinitializing radio interfaces: found interfaces on ip link: [%s]", szOutput);
+   hardware_radio_remove_stored_config();
+
+   _radio_links_cycle_radio_interfaces(1);
+   _radio_links_cycle_radio_interfaces(0);
    
    sprintf(szComm, "rm -rf %s%s", FOLDER_CONFIG, FILE_CONFIG_CURRENT_RADIO_HW_CONFIG);
    hw_execute_bash_command(szComm, NULL);
@@ -699,6 +765,40 @@ void radio_links_open_rxtx_radio_interfaces_for_search( u32 uSearchFreq )
       if ( 0 == hardware_radio_supports_frequency(pRadioHWInfo, uSearchFreq ) )
          continue;
 
+      // The RF profiles can restrict the role and the mode of a radio
+      // interface. While searching, the station receives the packets of the
+      // vehicles it is looking for, so an interface that the profile declares
+      // transmit only is not opened for reading. The mode is checked as well:
+      // an interface that is configured for the vehicle side does not take
+      // part in the search.
+      {
+         int iProfileRoleAllowsRx = radio_profiles_role_allows_rx(i);
+         int iProfileModeAllowsTx = radio_profiles_mode_allows_tx(i);
+         bool bHasProfileRole = (iProfileRoleAllowsRx >= 0);
+         bool bHasProfileMode = (iProfileModeAllowsTx >= 0);
+         if ( bHasProfileRole || bHasProfileMode )
+         {
+            const radio_profile_t* pProfile = radio_profiles_get_by_interface(i);
+            log_line("Radio interface %d (%s) is configured by the RF profile [%s]: role %s, mode %s.",
+               i+1, pRadioHWInfo->szName,
+               (NULL != pProfile) ? pProfile->szName : "?",
+               radio_profiles_get_role_description((bHasProfileRole) ? radio_profiles_get_role_for_interface(i) : -1),
+               radio_profiles_get_mode_description((bHasProfileMode) ? radio_profiles_get_mode_for_interface(i) : -1));
+         }
+
+         if ( bHasProfileRole && (0 == iProfileRoleAllowsRx) )
+         {
+            log_line("Radio interface %d (%s) is transmit only, it is not opened for reading for the search.", i+1, pRadioHWInfo->szName);
+            continue;
+         }
+
+         if ( bHasProfileMode && (0 == iProfileModeAllowsTx) )
+         {
+            log_line("Radio interface %d (%s) is in vehicle mode, it does not take part in the search.", i+1, pRadioHWInfo->szName);
+            continue;
+         }
+      }
+
       if ( flags & RADIO_HW_CAPABILITY_FLAG_CAN_RX )
       if ( flags & RADIO_HW_CAPABILITY_FLAG_CAN_USE_FOR_DATA )
       {
@@ -722,7 +822,7 @@ void radio_links_open_rxtx_radio_interfaces_for_search( u32 uSearchFreq )
                g_SM_RadioStats.radio_interfaces[i].openedForRead = 1;
                iCountOpenRead++;
                iCountSikInterfacesOpened++;
-            }          
+            }
          }
          else
          {
@@ -742,7 +842,13 @@ void radio_links_open_rxtx_radio_interfaces_for_search( u32 uSearchFreq )
    
    if ( 0 < iCountSikInterfacesOpened )
    {
-      radio_tx_set_sik_packet_size(g_pCurrentModel->radioLinksParams.iSiKPacketSize);
+      // While searching there is no paired vehicle yet, so there is no current
+      // model to take the SiK packet size from. In that case the radio keeps
+      // the default packet size, instead of dereferencing a null model.
+      int iSiKPacketSize = DEFAULT_SIK_PACKET_SIZE;
+      if ( NULL != g_pCurrentModel )
+         iSiKPacketSize = g_pCurrentModel->radioLinksParams.iSiKPacketSize;
+      radio_tx_set_sik_packet_size(iSiKPacketSize);
       radio_tx_start_tx_thread();
    }
 
@@ -854,6 +960,60 @@ void radio_links_open_rxtx_radio_interfaces()
 
       u32 cardFlags = controllerGetCardFlags(pRadioHWInfo->szMAC);
 
+      // The RF profiles can restrict the role and the mode of a radio
+      // interface. If a profile is bound to this interface, the role decides if
+      // the interface is used for receiving and/or for transmitting and the
+      // mode decides if this side of the link is allowed to transmit.
+      int iProfileRoleAllowsTx = radio_profiles_role_allows_tx(i);
+      int iProfileRoleAllowsRx = radio_profiles_role_allows_rx(i);
+      int iProfileModeAllowsTx = radio_profiles_mode_allows_tx(i);
+      bool bHasProfileRole = (iProfileRoleAllowsTx >= 0) || (iProfileRoleAllowsRx >= 0);
+      bool bHasProfileMode = (iProfileModeAllowsTx >= 0);
+      if ( bHasProfileRole || bHasProfileMode )
+      {
+         const radio_profile_t* pProfile = radio_profiles_get_by_interface(i);
+         log_line("Radio interface %d (%s) is configured by the RF profile [%s]: role %s, mode %s.",
+            i+1, pRadioHWInfo->szName,
+            (NULL != pProfile) ? pProfile->szName : "?",
+            radio_profiles_get_role_description((iProfileRoleAllowsTx >= 0) ? radio_profiles_get_role_for_interface(i) : -1),
+            radio_profiles_get_mode_description((iProfileModeAllowsTx >= 0) ? radio_profiles_get_mode_for_interface(i) : -1));
+      }
+
+      if ( bHasProfileRole && (0 == iProfileRoleAllowsRx) )
+      {
+         log_line("Radio interface %d (%s) is transmit only, it is not opened for reading.", i+1, pRadioHWInfo->szName);
+         cardFlags &= ~((u32)RADIO_HW_CAPABILITY_FLAG_CAN_RX);
+      }
+
+      if ( bHasProfileRole && (0 == iProfileRoleAllowsTx) )
+      {
+         log_line("Radio interface %d (%s) is receive only, it is not opened for writing.", i+1, pRadioHWInfo->szName);
+         cardFlags &= ~((u32)RADIO_HW_CAPABILITY_FLAG_CAN_TX);
+      }
+
+      if ( bHasProfileMode && (0 == iProfileModeAllowsTx) )
+      {
+         log_line("Radio interface %d (%s) is in vehicle mode, it is not opened for writing.", i+1, pRadioHWInfo->szName);
+         cardFlags &= ~((u32)RADIO_HW_CAPABILITY_FLAG_CAN_TX);
+      }
+
+      // The RF profile that is bound to this interface is applied to the
+      // hardware: the monitor mode, the frequency, the bandwidth and the TX
+      // power. Without this, the profile would only be a stored setting that
+      // the radio link ignores. The failure is reported and it does not stop
+      // the link from being opened, so a misconfigured profile does not
+      // disable the radio completely.
+      {
+         char szProfileError[512];
+         szProfileError[0] = 0;
+         int iProfileApplied = radio_profiles_apply_to_interface(i, szProfileError, sizeof(szProfileError)/sizeof(szProfileError[0]));
+         if ( 0 == iProfileApplied )
+         {
+            log_softerror_and_alarm("Failed to apply the RF profile of radio interface %d (%s): %s",
+               i+1, pRadioHWInfo->szName, szProfileError);
+         }
+      }
+
       if ( cardFlags & RADIO_HW_CAPABILITY_FLAG_CAN_RX )
       if ( (cardFlags & RADIO_HW_CAPABILITY_FLAG_CAN_USE_FOR_VIDEO) ||
            (cardFlags & RADIO_HW_CAPABILITY_FLAG_CAN_USE_FOR_DATA) )
@@ -906,7 +1066,7 @@ void radio_links_open_rxtx_radio_interfaces()
          }
       }
 
-      if ( g_pCurrentModel->getVehicleFirmwareType() == MODEL_FIRMWARE_TYPE_RUBY )
+      if ( g_pCurrentModel->getVehicleFirmwareType() == MODEL_FIRMWARE_TYPE_RUBY || g_pCurrentModel->getVehicleFirmwareType() == MODEL_FIRMWARE_TYPE_OPENIPC )
       if ( cardFlags & RADIO_HW_CAPABILITY_FLAG_CAN_TX )
       if ( (cardFlags & RADIO_HW_CAPABILITY_FLAG_CAN_USE_FOR_VIDEO) ||
            (cardFlags & RADIO_HW_CAPABILITY_FLAG_CAN_USE_FOR_DATA) )
@@ -936,7 +1096,7 @@ void radio_links_open_rxtx_radio_interfaces()
    }
 
    if ( 0 == totalCountForWrite )
-   if ( g_pCurrentModel->getVehicleFirmwareType() == MODEL_FIRMWARE_TYPE_RUBY )
+   if ( g_pCurrentModel->getVehicleFirmwareType() == MODEL_FIRMWARE_TYPE_RUBY || g_pCurrentModel->getVehicleFirmwareType() == MODEL_FIRMWARE_TYPE_OPENIPC )
    {
       log_error_and_alarm("Can't find any TX interfaces for sending data.");
       radio_links_close_rxtx_radio_interfaces();
@@ -958,7 +1118,7 @@ void radio_links_open_rxtx_radio_interfaces()
 
       if ( 0 == countOpenedForWriteForRadioLink[i] )
       if ( (s_iLastAutoAssignmentRadioLink == -1) || (s_iLastAutoAssignmentRadioLink == i) )
-      if ( g_pCurrentModel->getVehicleFirmwareType() == MODEL_FIRMWARE_TYPE_RUBY )
+      if ( g_pCurrentModel->getVehicleFirmwareType() == MODEL_FIRMWARE_TYPE_RUBY || g_pCurrentModel->getVehicleFirmwareType() == MODEL_FIRMWARE_TYPE_OPENIPC )
          log_error_and_alarm("Failed to find or open any TX interface for sending data on vehicle's radio link %d.", i+1);
 
       //if ( 0 == countOpenedForReadForRadioLink[i] && 0 == countOpenedForWriteForRadioLink[i] )
@@ -1404,6 +1564,62 @@ void radio_links_set_monitor_mode()
       sprintf(szComm, "iw dev %s set monitor fcsfail 2>&1", pRadioHWInfo->szName);
       hw_execute_bash_command(szComm, NULL);
       hardware_sleep_ms(uDelayMS);
+      #endif
+
+      #ifdef HW_PLATFORM_LINUX_GENERIC
+      // On a generic Linux system the monitor mode is set with `iw`. The
+      // interface has to be in monitor mode to send and receive the raw
+      // Ruby packets. Changing the mode of a WiFi interface needs the
+      // CAP_NET_ADMIN capability, the failure is reported and not hidden.
+      {
+         // The interface that carries the network connection of the machine is
+         // never touched: it is not a radio of the ground station and its
+         // mode cannot be changed without breaking the network connection.
+         if ( hardware_radio_is_protected_interface(i) )
+         {
+            log_line("Radio interface %d (%s) carries the network connection of this machine: it is not put in monitor mode.",
+               i+1, pRadioHWInfo->szName);
+            continue;
+         }
+
+         int iMonitor = 0;
+         int iPhy = radio_cap_probe_monitor_state(i, &iMonitor);
+         if ( iPhy < 0 )
+         {
+            log_softerror_and_alarm("Failed to determine the monitor mode state of radio interface %d (%s): %s",
+               i+1, pRadioHWInfo->szName, radio_cap_get_last_error());
+            continue;
+         }
+         if ( iMonitor )
+            continue;
+
+         radio_cap_interface_t Cap;
+         if ( radio_cap_probe_interface(i, &Cap) )
+         {
+            if ( ! Cap.bMonitorSupported )
+            {
+               log_softerror_and_alarm("Radio interface %d (%s) does not support the monitor mode. It cannot be used for RF links.",
+                  i+1, pRadioHWInfo->szName);
+               continue;
+            }
+         }
+
+         log_line("Setting radio interface %d (%s) to monitor mode.", i+1, pRadioHWInfo->szName);
+         if ( ! radio_cap_set_monitor_mode(i, 1) )
+         {
+            log_softerror_and_alarm("Failed to set the monitor mode of radio interface %d (%s): %s. "
+               "The 'CAP_NET_ADMIN' capability is needed to change the mode of a WiFi interface.",
+               i+1, pRadioHWInfo->szName, radio_cap_get_last_error());
+            continue;
+         }
+         hardware_sleep_ms(uDelayMS);
+
+         // The Ruby specific monitor flags are applied after the mode change,
+         // the same way the embedded platforms do it. A driver that does not
+         // accept them is reported, the monitor mode stays set.
+         radio_cap_set_monitor_flags(i);
+         hardware_sleep_ms(uDelayMS);
+      }
       #endif
    }
 }

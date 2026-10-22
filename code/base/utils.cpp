@@ -35,6 +35,7 @@
 #include "../base/config.h"
 #include "../base/models.h"
 #include "../base/hardware_procs.h"
+#include "../base/radio_capabilities.h"
 #include "../common/string_utils.h"
 #include "../radio/radioflags.h"
 
@@ -684,6 +685,28 @@ bool radio_utils_set_interface_frequency(Model* pModel, int iRadioIndex, int iAs
          continue;
       }
 
+      // The interface that carries the network connection of the machine is
+      // never tuned: it is not a radio of the ground station.
+      if ( hardware_radio_is_protected_interface(i) )
+      {
+         log_line("Radio interface %d (%s, %s) carries the network connection of this machine: it is not tuned. Skipping it.",
+            i+1, pRadioInfo->szName, str_get_radio_driver_description(pRadioInfo->iRadioDriver));
+         continue;
+      }
+
+      // The antenna restriction is checked before the interface is tuned, so a
+      // card that cannot be tuned to this band is never touched.
+      if ( ! radio_cap_card_model_allows_frequency(pRadioInfo->iCardModel, uFrequencyKhz) )
+      {
+         log_softerror_and_alarm("Refusing to set radio interface %d (%s) to frequency %s: %s",
+            i+1, pRadioInfo->szName, str_format_frequency(uFrequencyKhz),
+            radio_cap_get_antenna_restriction_description(pRadioInfo->iCardModel));
+         pRadioInfo->lastFrequencySetFailed = 1;
+         pRadioInfo->uFailedFrequencyKhz = uFrequencyKhz;
+         failed = true;
+         continue;
+      }
+
       if ( hardware_radio_is_sik_radio(pRadioInfo) )
       {
          if ( ! hardware_radio_sik_set_frequency(pRadioInfo, uFrequencyKhz, pProcessStats) )
@@ -712,28 +735,12 @@ bool radio_utils_set_interface_frequency(Model* pModel, int iRadioIndex, int iAs
 
          if ( bTryHT40 )
          {
-            #if defined(HW_PLATFORM_RASPBERRY)
-            if ( pRadioInfo->iRadioType == RADIO_TYPE_ATHEROS )
-            {
-               sprintf(cmd, "iw dev %s set freq %u HT40+", pRadioInfo->szName, uFreqWifi);
-               bUsedHT40 = true;
-            }
-            else
-            {
-               sprintf(cmd, "iw dev %s set freq %u HT40+", pRadioInfo->szName, uFreqWifi);
-               bUsedHT40 = true;
-            }
-            #else
-               sprintf(cmd, "iwconfig %s freq %u000", pRadioInfo->szName, uFrequencyKhz);            
-            #endif
+            sprintf(cmd, "iw dev %s set freq %u HT40+", pRadioInfo->szName, uFreqWifi);
+            bUsedHT40 = true;
          }
          else if ( pRadioInfo->isHighCapacityInterface )
          {
-            #if defined(HW_PLATFORM_RASPBERRY)
             sprintf(cmd, "iw dev %s set freq %u", pRadioInfo->szName, uFreqWifi);
-            #else
-            sprintf(cmd, "iwconfig %s freq %u000", pRadioInfo->szName, uFrequencyKhz);            
-            #endif
          }
          hw_execute_process(cmd, 0, szOutput, sizeof(szOutput)/sizeof(szOutput[0]));
          
@@ -753,11 +760,7 @@ bool radio_utils_set_interface_frequency(Model* pModel, int iRadioIndex, int iAs
             log_softerror_and_alarm("Failed to switch radio interface %d (%s, %s) to frequency %s in HT40 mode, returned error: [%s]. Retry operation.", i+1, pRadioInfo->szName, str_get_radio_driver_description(pRadioInfo->iRadioDriver), str_format_frequency(uFrequencyKhz), szOutput);
             hardware_sleep_ms(delayMs);
             szOutput[0] = 0;
-            #if defined(HW_PLATFORM_RASPBERRY)
             sprintf(cmd, "iw dev %s set freq %u", pRadioInfo->szName, uFreqWifi);
-            #else
-            sprintf(cmd, "iwconfig %s freq %u000", pRadioInfo->szName, uFrequencyKhz);
-            #endif
             hw_execute_bash_command_raw(cmd, szOutput);
          }
 
@@ -810,6 +813,110 @@ bool radio_utils_set_interface_frequency(Model* pModel, int iRadioIndex, int iAs
    return anySucceeded;
 }
 
+// Sets the frequency and the bandwidth of a WiFi radio interface.
+// The bandwidth is one of the RADIO_CAP_BW_* values, converted to the `iw`
+// channel width argument. Returns true if the interface was configured.
+bool radio_utils_set_interface_frequency_and_bandwidth(int iRadioIndex, u32 uFrequencyKhz, const char* szHTFlag)
+{
+   if ( uFrequencyKhz == 0 )
+   {
+      log_softerror_and_alarm("Skipping setting card (%d) due to invalid uFrequencyKhz 0.", iRadioIndex+1);
+      return false;
+   }
+
+   if ( (iRadioIndex < 0) || (iRadioIndex >= hardware_get_radio_interfaces_count()) )
+      return false;
+
+   radio_hw_info_t* pRadioInfo = hardware_get_radio_info(iRadioIndex);
+   if ( NULL == pRadioInfo )
+      return false;
+
+   if ( ! pRadioInfo->isConfigurable )
+   {
+      log_softerror_and_alarm("Radio interface %d (%s) is not configurable. Skipping it.", iRadioIndex+1, pRadioInfo->szName);
+      return false;
+   }
+
+   // The interface that carries the network connection of the machine is never
+   // tuned: it is not a radio of the ground station.
+   if ( hardware_radio_is_protected_interface(iRadioIndex) )
+   {
+      log_softerror_and_alarm("Radio interface %d (%s) carries the network connection of this machine: it is not tuned. Skipping it.", iRadioIndex+1, pRadioInfo->szName);
+      return false;
+   }
+
+   if ( ! hardware_radio_is_wifi_radio(pRadioInfo) )
+   {
+      log_softerror_and_alarm("Radio interface %d (%s) is not a WiFi interface, the bandwidth cannot be set.", iRadioIndex+1, pRadioInfo->szName);
+      return false;
+   }
+
+   if ( ! hardware_radioindex_supports_frequency(iRadioIndex, uFrequencyKhz) )
+   {
+      log_softerror_and_alarm("Radio interface %d (%s) does not support %s. Skipping it.", iRadioIndex+1, pRadioInfo->szName, str_format_frequency(uFrequencyKhz));
+      pRadioInfo->lastFrequencySetFailed = 1;
+      pRadioInfo->uFailedFrequencyKhz = uFrequencyKhz;
+      return false;
+   }
+
+   // The antenna restriction is checked before the interface is tuned, so a
+   // card that cannot be tuned to this band is never touched.
+   if ( ! radio_cap_card_model_allows_frequency(pRadioInfo->iCardModel, uFrequencyKhz) )
+   {
+      log_softerror_and_alarm("Refusing to set radio interface %d (%s) to frequency %s: %s",
+         iRadioIndex+1, pRadioInfo->szName, str_format_frequency(uFrequencyKhz),
+         radio_cap_get_antenna_restriction_description(pRadioInfo->iCardModel));
+      pRadioInfo->lastFrequencySetFailed = 1;
+      pRadioInfo->uFailedFrequencyKhz = uFrequencyKhz;
+      pRadioInfo->uCurrentFrequencyKhz = 0;
+      return false;
+   }
+
+   u32 uFreqWifi = uFrequencyKhz/1000;
+   char cmd[128];
+   char szOutput[512];
+   szOutput[0] = 0;
+
+   if ( (NULL != szHTFlag) && (0 != strlen(szHTFlag)) )
+      snprintf(cmd, sizeof(cmd), "iw dev %s set freq %u %s", pRadioInfo->szName, uFreqWifi, szHTFlag);
+   else
+      snprintf(cmd, sizeof(cmd), "iw dev %s set freq %u", pRadioInfo->szName, uFreqWifi);
+
+   log_line("Setting radio interface %d (%s) to frequency %s (freq for wifi: %u) bandwidth [%s]",
+      iRadioIndex+1, pRadioInfo->szName, str_format_frequency(uFrequencyKhz), uFreqWifi,
+      ((NULL != szHTFlag) && (0 != strlen(szHTFlag))) ? szHTFlag : "default");
+   hw_execute_process(cmd, 0, szOutput, sizeof(szOutput)/sizeof(szOutput[0]));
+
+   if ( 5 < strlen(szOutput) )
+      log_softerror_and_alarm("Received a response from set freq command: [%s]", szOutput);
+
+   if ( (NULL != strstr(szOutput, "failed")) || (NULL != strstr(szOutput, "Invalid argument")) ||
+        (NULL != strstr(szOutput, "busy")) || (NULL != strstr(szOutput, "such device")) ||
+        (NULL != strstr(szOutput, "not found")) )
+   {
+      int len = strlen(szOutput);
+      for( int k=0; k<len; k++ )
+         if ( (szOutput[k] == 10) || (szOutput[k] == 13) )
+            szOutput[k] = '.';
+      log_softerror_and_alarm("Failed to switch radio interface %d (%s) to frequency %s bandwidth [%s], returned error: [%s]",
+         iRadioIndex+1, pRadioInfo->szName, str_format_frequency(uFrequencyKhz),
+         ((NULL != szHTFlag) && (0 != strlen(szHTFlag))) ? szHTFlag : "default", szOutput);
+      pRadioInfo->lastFrequencySetFailed = 1;
+      pRadioInfo->uFailedFrequencyKhz = uFrequencyKhz;
+      pRadioInfo->uCurrentFrequencyKhz = 0;
+      return false;
+   }
+
+   pRadioInfo->uCurrentFrequencyKhz = uFrequencyKhz;
+   pRadioInfo->lastFrequencySetFailed = 0;
+   pRadioInfo->uFailedFrequencyKhz = 0;
+   log_line("Setting radio interface %d (%s) to frequency %s bandwidth [%s] succeeded.",
+      iRadioIndex+1, pRadioInfo->szName, str_format_frequency(uFrequencyKhz),
+      ((NULL != szHTFlag) && (0 != strlen(szHTFlag))) ? szHTFlag : "default");
+   return true;
+}
+
+
 bool radio_utils_set_datarate_atheros(Model* pModel, int iCard, int dataRate_bps, u32 uDelayMs)
 {
    u32 delayMs = DEFAULT_DELAY_WIFI_CHANGE;
@@ -829,6 +936,14 @@ bool radio_utils_set_datarate_atheros(Model* pModel, int iCard, int dataRate_bps
    if ( NULL == pRadioHWInfo )
    {
       log_softerror_and_alarm("Can't get info for radio interface %d", iCard+1);
+      return false;
+   }
+
+   // The interface that carries the network connection of the machine is never
+   // configured: it is not a radio of the ground station.
+   if ( hardware_radio_is_protected_interface(iCard) )
+   {
+      log_softerror_and_alarm("Radio interface %d (%s) carries the network connection of this machine: it is not configured.", iCard+1, pRadioHWInfo->szName);
       return false;
    }
 

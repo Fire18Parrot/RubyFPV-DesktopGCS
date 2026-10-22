@@ -21,3 +21,8 @@ void rx_video_output_on_changed_video_params(video_parameters_t* pOldVideoParams
 void rx_video_output_signal_restart_streamer();
 void rx_video_output_periodic_loop();
 
+// The total number of the video bytes that were written to the FIFO of the
+// local video player (the desktop player) since the start of the process.
+// It is used to check that the video really reached the player.
+unsigned long long rx_video_output_get_bytes_to_local_video_player();
+

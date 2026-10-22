@@ -118,7 +118,7 @@ int handle_commands_on_full_model_settings_received(u32 uVehicleId, int iRespons
    if ( (NULL == pData) || (iLength <= 0) )
       return -1;
 
-   log_line("[Commands] Handling received full model settings, %d bytes, from VID %u, response param: %d", iLength, uVehicleId, iResponseParam);
+   log_line("[SyncTrace] handle_commands_on_full_model_settings_received: VID=%u, len=%d, resp_param=%d", uVehicleId, iLength, iResponseParam);
 
    int iIndexRuntime = -1;
    for( int i=0; i<MAX_CONCURENT_VEHICLES; i++ )
@@ -132,7 +132,7 @@ int handle_commands_on_full_model_settings_received(u32 uVehicleId, int iRespons
 
    if ( iIndexRuntime == -1 )
    {
-      log_softerror_and_alarm("[Commands] Received model settings for vehicle not found in the runtime list. Ignoring it. Current runtime list:");
+      log_softerror_and_alarm("[SyncTrace] Model settings for unknown VID %u. Runtime list:", uVehicleId);
       log_current_runtime_vehicles_info();
       s_CommandType = 0;
       s_bHasCommandInProgress = false;
@@ -343,10 +343,13 @@ void _handle_received_command_response_to_get_all_params_zip(u8* pPacket, int iL
    u8* pDataBuffer = pPacket + sizeof(t_packet_header) + sizeof(t_packet_header_command_response);
    int iDataLength = pPH->total_length - sizeof(t_packet_header) - sizeof(t_packet_header_command_response);
    
+   log_line("[SyncTrace] _handle_received_command_response_to_get_all_params_zip: VID=%u, data_len=%d, resp_param=%d, flags=%s",
+      pPH->vehicle_id_src, iDataLength, pPHCR->command_response_param, str_get_command_response_flags_string(pPHCR->command_response_flags));
+
    // Did we a full, complete, single zip response?
    if ( iDataLength > 500 )
    {
-      log_line("[Commands] Received model settings response (from VID %u) as full single compressed file. Model file size (compressed): %d, command response param: %d", pPH->vehicle_id_src, iDataLength, pPHCR->command_response_param);
+      log_line("[SyncTrace] Full single compressed model settings: %d bytes", iDataLength);
       handle_commands_on_full_model_settings_received(pPH->vehicle_id_src, pPHCR->command_response_param, pDataBuffer, iDataLength);
       return;
    }
@@ -1919,8 +1922,27 @@ bool _commands_check_send_get_settings()
       return false;
    }
 
-   //log_line("%d, %d, %d, %d, %u, %u, %d", s_bHasCommandInProgress, g_pCurrentModel->b_mustSyncFromVehicle, g_pCurrentModel->is_spectator, g_bSearching,
-   //           g_TimeNow, g_RouterIsReadyTimestamp, s_iCountRetriesToGetModelSettingsCommand);
+   static u32 s_uLastSyncTraceLog = 0;
+   bool bTraceSync = (g_TimeNow > s_uLastSyncTraceLog + 5000);
+   if ( bTraceSync )
+      s_uLastSyncTraceLog = g_TimeNow;
+
+   if ( bTraceSync && NULL != g_pCurrentModel )
+   {
+      log_line("[SyncTrace] Firmware type: %u (RUBY=%u), b_mustSync: %s, firstConn: %s, spectator: %s, searching: %s, reinit: %s, videoPlaying: %s, updateInProg: %s, cmdInProg: %s, online: %s, paired: %s, routerReady: %u, retries: %d",
+         g_pCurrentModel->getVehicleFirmwareType(), MODEL_FIRMWARE_TYPE_RUBY,
+         g_pCurrentModel->b_mustSyncFromVehicle?"Y":"N",
+         g_bIsFirstConnectionToCurrentVehicle?"Y":"N",
+         g_pCurrentModel->is_spectator?"Y":"N",
+         g_bSearching?"Y":"N",
+         g_bIsReinit?"Y":"N",
+         g_bIsVideoPlaying?"Y":"N",
+         g_bUpdateInProgress?"Y":"N",
+         s_bHasCommandInProgress?"Y":"N",
+         link_is_vehicle_online_now(g_pCurrentModel->uVehicleId)?"Y":"N",
+         g_VehiclesRuntimeInfo[g_iCurrentActiveVehicleRuntimeInfoIndex].bPairedConfirmed?"Y":"N",
+         g_RouterIsReadyTimestamp, s_iCountRetriesToGetModelSettingsCommand);
+   }
 
    if ( ! g_bIsReinit )
    if ( ! g_bIsVideoPlaying )
@@ -1928,12 +1950,19 @@ bool _commands_check_send_get_settings()
    if ( ! s_bHasCommandInProgress )
    if ( ! g_bUpdateInProgress )
    if ( (NULL != g_pCurrentModel) && (g_pCurrentModel->b_mustSyncFromVehicle || g_bIsFirstConnectionToCurrentVehicle ) && (!g_pCurrentModel->is_spectator))
-   if ( g_pCurrentModel->getVehicleFirmwareType() == MODEL_FIRMWARE_TYPE_RUBY )
+   if ( g_pCurrentModel->getVehicleFirmwareType() == MODEL_FIRMWARE_TYPE_RUBY || g_pCurrentModel->getVehicleFirmwareType() == MODEL_FIRMWARE_TYPE_OPENIPC )
    if ( link_is_vehicle_online_now(g_pCurrentModel->uVehicleId) )
-   if ( g_VehiclesRuntimeInfo[g_iCurrentActiveVehicleRuntimeInfoIndex].bPairedConfirmed )
+   /*
+    * OpenIPC/Eachine vehicles do not always answer with a Ruby pairing
+    * confirmation packet; gating the very first settings download on the
+    * pairing flag therefore leaves the GCS permanently unsynced. On the
+    * first connection, accept the telemetry link instead.
+    */
+   if ( g_VehiclesRuntimeInfo[g_iCurrentActiveVehicleRuntimeInfoIndex].bPairedConfirmed || g_bIsFirstConnectionToCurrentVehicle )
    if ( g_TimeNow > g_RouterIsReadyTimestamp + 500  )
    if ( s_iCountRetriesToGetModelSettingsCommand < 5 )
    {
+      g_VehiclesRuntimeInfo[g_iCurrentActiveVehicleRuntimeInfoIndex].bPairedConfirmed = true;
       log_line("[Commands] Must sync settings from vehicle...");
       s_iCountRetriesToGetModelSettingsCommand++;
       log_line("[Commands] Current vehicle sw version: %d.%d (b-%d)", get_sw_version_major(g_pCurrentModel), get_sw_version_minor(g_pCurrentModel), get_sw_version_build(g_pCurrentModel));
@@ -1959,7 +1988,7 @@ bool _commands_check_send_get_settings()
    }
 
    if ( (NULL != g_pCurrentModel) && (g_pCurrentModel->b_mustSyncFromVehicle || g_bIsFirstConnectionToCurrentVehicle ) && (!g_pCurrentModel->is_spectator))
-   if ( g_pCurrentModel->getVehicleFirmwareType() == MODEL_FIRMWARE_TYPE_RUBY )
+   if ( g_pCurrentModel->getVehicleFirmwareType() == MODEL_FIRMWARE_TYPE_RUBY || g_pCurrentModel->getVehicleFirmwareType() == MODEL_FIRMWARE_TYPE_OPENIPC )
    if ( ! g_bIsVideoPlaying )
    {
       static u32 s_uLastTimeErrorVehicleSync = 0;
@@ -2228,6 +2257,13 @@ void handle_commands_on_response_received(u8* pPacketBuffer, int iLength)
    
    memcpy( s_CommandReplyBuffer, pPacketBuffer, pPH->total_length );
    s_CommandReplyLength = pPH->total_length;
+
+   if ( pPHCR->origin_command_type == COMMAND_ID_GET_ALL_PARAMS_ZIP )
+   {
+      int iDataLength = pPH->total_length - sizeof(t_packet_header) - sizeof(t_packet_header_command_response);
+      log_line("[SyncTrace] GET_ALL_PARAMS_ZIP response: flags=%s, data_len=%d, resp_param=%d",
+         str_get_command_response_flags_string(pPHCR->command_response_flags), iDataLength, pPHCR->command_response_param);
+   }
 
    if ( (pPHCR->command_response_flags & COMMAND_RESPONSE_FLAGS_UNKNOWN_COMMAND) ||
         (pPHCR->command_response_flags & COMMAND_RESPONSE_FLAGS_FAILED_INVALID_PARAMS) )

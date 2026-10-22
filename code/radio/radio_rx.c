@@ -453,6 +453,16 @@ void _radio_rx_add_packet_to_rx_queue(u8* pPacket, int iLength, int iRadioInterf
    if ( (NULL == pPacket) || (iLength <= 0) || s_iRadioRxMarkedForQuit )
       return;
 
+   // The queue buffers are MAX_PACKET_TOTAL_SIZE bytes. The length of a
+   // received packet comes from the radio link, so it must be checked before
+   // the packet is copied in the queue.
+   if ( iLength > MAX_PACKET_TOTAL_SIZE )
+   {
+      log_softerror_and_alarm("RadioRx: Discarded a packet of %d bytes on radio interface %d: the maximum packet size is %d bytes.",
+         iLength, iRadioInterface+1, MAX_PACKET_TOTAL_SIZE);
+      return;
+   }
+
    t_packet_header* pPH = (t_packet_header*)pPacket;
    u8 uPacketFlags = pPH->packet_flags;
 
@@ -564,7 +574,7 @@ int _radio_rx_process_serial_short_packet(int iInterfaceIndex, u8* pPacketBuffer
 
    if ( (NULL == pPacketBuffer) || (iPacketLength < (int)sizeof(t_packet_header_short)) )
       return -1;
-   if ( (iInterfaceIndex < 0) || (iInterfaceIndex > hardware_get_radio_interfaces_count()) )
+   if ( (iInterfaceIndex < 0) || (iInterfaceIndex >= hardware_get_radio_interfaces_count()) )
       return -1;
 
    t_packet_header_short* pPHS = (t_packet_header_short*)pPacketBuffer;
@@ -1118,6 +1128,7 @@ void * _thread_radio_rx(void *argument)
       //s_bCanDoExternalOperations = 1;
       //int nResult = select(s_iRadioRxMaxFD, &s_RadioRxReadSet, NULL, NULL, &s_iRadioRxReadTimeInterval);
       int nResult = poll(fds, s_iRadioRxCountFDs, iPollTimeoutMs);
+
       //s_bCanDoExternalOperations = 0;
       s_uRadioRxTimeNow = get_current_timestamp_ms();
       s_uRadioRxLastTimeQueue = 0;
@@ -1143,6 +1154,7 @@ void * _thread_radio_rx(void *argument)
       int iMaxReadsPerTry = 5;
       int iMaxRepeatCount = 5;
       int iMaxedInterface = -1;
+      int iReadAttempts = 0;
 
       int iParsedPackets[MAX_RADIO_INTERFACES];
       for( int i=0; i<MAX_RADIO_INTERFACES; i++ )
@@ -1174,7 +1186,11 @@ void * _thread_radio_rx(void *argument)
 
          for(int iPollIndex=0; iPollIndex < s_iRadioRxCountFDs; iPollIndex++)
          {
-            if ( 0 == (fds[iPollIndex].revents & POLLIN) )
+            // A read is attempted also when the poll reported an error on the interface (POLLERR, POLLHUP).
+            // The pending error of the socket (for example the ENOBUFS of a full receive buffer) is cleared
+            // only by a read; if it was never read, the poll would return at every iteration and this thread
+            // would spin at 100% CPU.
+            if ( 0 == (fds[iPollIndex].revents & (POLLIN|POLLERR|POLLHUP)) )
                continue;
 
             int iInterfaceIndex = -1;
@@ -1212,6 +1228,7 @@ void * _thread_radio_rx(void *argument)
 
             if ( hardware_radio_index_is_serial_radio(iInterfaceIndex) )
             {
+               iReadAttempts++;
                iParsedPackets[iInterfaceIndex] = _radio_rx_parse_received_serial_radio_data(iInterfaceIndex);
                if ( iParsedPackets[iInterfaceIndex] < 0 )
                {
@@ -1221,6 +1238,7 @@ void * _thread_radio_rx(void *argument)
             }
             else
             {
+               iReadAttempts++;
                iParsedPackets[iInterfaceIndex] = _radio_rx_parse_received_wifi_radio_data(iInterfaceIndex, iMaxReadsPerTry);
                if ( (iParsedPackets[iInterfaceIndex] < 0) || ( radio_get_last_read_error_code() == RADIO_READ_ERROR_INTERFACE_BROKEN ) )
                {
@@ -1234,6 +1252,11 @@ void * _thread_radio_rx(void *argument)
             }
          }
       } while ( (iMaxedInterface != -1) && (iMaxRepeatCount > 0));
+
+      // The poll woke up but no packet could be read at all: without this small delay the loop would
+      // return immediately to the poll, over and over again, burning the whole CPU.
+      if ( (0 == iReadAttempts) && (0 == iLoopParsedPackets) )
+         hardware_sleep_ms(1);
 
       s_uRadioRxTimeNow = get_current_timestamp_ms();
    }
