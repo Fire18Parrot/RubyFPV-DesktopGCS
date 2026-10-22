@@ -1312,7 +1312,8 @@ void rx_video_output_video_data(u32 uVehicleId, t_packet_header_video_segment* p
             log_line("[VideoOutput] Initial video stream resolution: %d x %d", width, height);
       }
 
-      if ( (width != s_iRxVideoForwardLastWidth) || (height != s_iRxVideoForwardLastHeight) )
+      if ( (0 != width) && (0 != s_iRxVideoForwardLastWidth) &&
+           ( (width != s_iRxVideoForwardLastWidth) || (height != s_iRxVideoForwardLastHeight) ) )
       {
          log_line("[VideoOutput] Video resolution changed at VID %u (From %d x %d to %d x %d). Signal reload of the video streamer.",
             uVehicleId, s_iRxVideoForwardLastWidth, s_iRxVideoForwardLastHeight, width, height);
@@ -1324,7 +1325,8 @@ void rx_video_output_video_data(u32 uVehicleId, t_packet_header_video_segment* p
          return;
       }
 
-      if ( s_uCurrentReceivedVideoStreamType != uVideoStreamType )
+      if ( (0 != uVideoStreamType) && (s_uCurrentReceivedVideoStreamType != 0) &&
+           (s_uCurrentReceivedVideoStreamType != uVideoStreamType) )
       {
          log_line("[VideoOutput] Video stream codec changed at VID %u (From %d to %d). Signal reload of the video streamer.",
             uVehicleId, s_uCurrentReceivedVideoStreamType, uVideoStreamType);
