@@ -122,6 +122,18 @@ for b in ${BINARIES_WITH_CAPS}; do
    echo "  $(getcap "${RUN_DIR}/${b}")"
 done
 
+for h in iw ip; do
+   if ! command -v "$h" >/dev/null 2>&1; then
+      echo "WARNING: system helper $h is missing"
+      continue
+   fi
+   cp -f "$(command -v "$h")" "${RUN_DIR}/${h}"
+   chmod 755 "${RUN_DIR}/${h}"
+   setcap -r "${RUN_DIR}/${h}" 2>/dev/null || true
+   setcap "${CAPS}+epi" "${RUN_DIR}/${h}"
+   echo "  $(getcap "${RUN_DIR}/${h}")"
+done
+
 # The resources of the ground station are loaded with a path that is relative
 # to the current working directory, and the ground station runs from the
 # runtime directory: they are reached through a symbolic link.

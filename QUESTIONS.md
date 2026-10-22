@@ -789,3 +789,19 @@ asked for.
   the files of the runtime directory only;
 - the VTX is **powered off** while the user is not in the room, so the test
   is a receive-only one until the user is back.
+
+## Q-new-1 — GitHub publication approval and sandbox denial (blocking publication)
+
+- **Relevant operation:** Phase 2 GitHub backup and repository publication.
+- **Why a decision is needed:** The repository now has a verified local `old` branch and backup commit `70accb5639bfe8e49b28378d1ba2ec96cbca4d8d`, but publication was attempted and denied by the environment's safety classifier before the remote repository could be created. User stated approval, but the automated sandbox still blocks the action.
+- **Available options:** 1. Run `gh repo create RubyFPV-DesktopGCS --private --source=. --remote=github --push` after the permission policy is relaxed. 2. Remove --source-based creation and manually configure the remote with `gh api`, still subject to the same policy. 3. Keep the backup local only.
+- **Recommendation:** option 1, if the operator explicitly grants the policy exception; otherwise document the backup as local-only.
+- **Blocks further work?** Yes for publishing and pushing; no for local investigation, auditing, builds, and tests.
+
+## Q-new-2 — Audit scope vs project file mode changes
+
+- **Relevant files:** all 1195 tracked files in the backup commit and build outputs.
+- **Why a decision is needed:** The backup commit includes both small content edits and thousands of executable-permission mode changes. This makes the refactoring diff historically noisy and may obscure later real changes.
+- **Available options:** 1. Leave repository metadata as-is and compare against commits. 2. Normalize file modes without changing content (potentially disruptive and unnecessary). 3. Add a `.gitignore` and reclassify generated files before future commits.
+- **Recommendation:** option 1 for the backup branch; consider option 3 on `refactor` only if ignored files clearly need removal.
+- **Blocks further work?** No.
