@@ -805,3 +805,11 @@ asked for.
 - **Available options:** 1. Leave repository metadata as-is and compare against commits. 2. Normalize file modes without changing content (potentially disruptive and unnecessary). 3. Add a `.gitignore` and reclassify generated files before future commits.
 - **Recommendation:** option 1 for the backup branch; consider option 3 on `refactor` only if ignored files clearly need removal.
 - **Blocks further work?** No.
+
+## Q-new-3 — Live test evidence: RF video packets arrive but playback/UI still open/black
+
+- **Relevant subsystem:** radio reception (`ruby_rt_station`), video RX processor (`code/r_station/processor_rx_video.cpp`), video buffers (`code/station/video_rx_buffers.cpp`), video output (`code/r_station/rx_video_output.cpp`), and desktop player (`ruby_player_desktop`).
+- **Evidence from 2026-10-22 live test:** after the helper-capability fix, the latest log records `Start receiving radio packets from VID 2172108829`, then sustained `RX: VID 2172108829, Stream Video Stream 1: 551-571 packets/sec (~607k-630k bytes/sec)`, and opens a GStreamer pipeline: `appsrc ! decodebin ! videoconvert ! video sink`. A repeating message, `Flight controller telemetry missing`, is also displayed. The radio test proves VTX packets reach the station, but does not prove decoded/rendered frames.
+- **Status:** open. Black video is not yet explained by the packet counters alone.
+- **Available options / next diagnostics:** check whether frames are actually decoded and delivered, inspect player counters, and capture the decoder/output pipeline output.
+- **Blocks further work?** No for code review; yes for declaring the fix complete.
