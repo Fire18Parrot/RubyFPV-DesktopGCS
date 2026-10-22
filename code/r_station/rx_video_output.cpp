@@ -1231,6 +1231,9 @@ void rx_video_output_video_data(u32 uVehicleId, t_packet_header_video_segment* p
 {
    if ( g_bSearching )
       return;
+   if ( ! s_bDidSentAnyDataToVideoStreamerPipe && s_bEnableVideoStreamerOutput && s_bRxVideoOutputUsePipe )
+      log_line("[VideoTrace] rx_video_output_video_data: first call VID=%u, %d video bytes (streamer pipe enabled).", uVehicleId, video_data_length);
+   (void)0;
 
    u8 uVideoStreamType = (pPHVS->uVideoStreamIndexAndType >> 4) & 0x0F;
 
