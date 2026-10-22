@@ -1967,6 +1967,22 @@ bool _commands_check_send_get_settings()
       s_iCountRetriesToGetModelSettingsCommand++;
       log_line("[Commands] Current vehicle sw version: %d.%d (b-%d)", get_sw_version_major(g_pCurrentModel), get_sw_version_minor(g_pCurrentModel), get_sw_version_build(g_pCurrentModel));
 
+      /*
+       * A telemetry-only / OpenIPC-like VTX may never answer the Ruby
+       * full-settings command. Retrying forever keeps the settings
+       * synchronization loop and its pairing warning alive. After the
+       * existing five attempts, stop using the vehicle side as the settings
+       * owner and let the controller Keep its local model instead of faking
+       * a synchronization result.
+       */
+      if ( s_iCountRetriesToGetModelSettingsCommand >= 5 )
+      {
+         log_softerror_and_alarm("[Commands] Vehicle did not provide its model settings after %d attempts. Disabling repeated vehicle-settings sync for VID %u.",
+            s_iCountRetriesToGetModelSettingsCommand, g_pCurrentModel->uVehicleId);
+         g_pCurrentModel->b_mustSyncFromVehicle = false;
+         warnings_add(g_pCurrentModel->uVehicleId, "Vehicle settings were not provided by the vehicle. Local model settings are being used.", g_idIconError);
+      }
+
       u32 uFlags = 0;
       if ( get_sw_version_build(g_pCurrentModel) < 289 )
       {
