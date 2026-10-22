@@ -37,3 +37,10 @@ Updated: 2026-10-22 23:00 CEST. Branch: `refactor`. Preserve the `old` branch un
   claiming that settings synchronization succeeded.
 - Existing verification: compatibility 18/0 and ambient capability 3/0.
   No live VTX settings or sustained-rendering validation is claimed here.
+
+## Additional verification
+- `test_video_rx_pipeline`: 158/0.
+- `test_config_persistence`: 20/0.
+- `test_sw_version_compat`: 18/0.
+- `test_ambient_caps`: 3/0.
+- These tests verify software parsing/persistence behavior, not sustained live end-to-end video.
