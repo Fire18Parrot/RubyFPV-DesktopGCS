@@ -1950,20 +1950,12 @@ bool _commands_check_send_get_settings()
    if ( ! s_bHasCommandInProgress )
    if ( ! g_bUpdateInProgress )
    if ( (NULL != g_pCurrentModel) && (g_pCurrentModel->b_mustSyncFromVehicle || g_bIsFirstConnectionToCurrentVehicle ) && (!g_pCurrentModel->is_spectator))
-   if ( g_pCurrentModel->getVehicleFirmwareType() == MODEL_FIRMWARE_TYPE_RUBY || g_pCurrentModel->getVehicleFirmwareType() == MODEL_FIRMWARE_TYPE_OPENIPC )
+   if ( g_pCurrentModel->getVehicleFirmwareType() == MODEL_FIRMWARE_TYPE_RUBY )
    if ( link_is_vehicle_online_now(g_pCurrentModel->uVehicleId) )
-   /*
-    * OpenIPC/Eachine vehicles do not always answer with a Ruby pairing
-    * confirmation packet; gating the very first settings download on the
-    * pairing flag therefore leaves the GCS permanently unsynced. On the
-    * first connection, accept the telemetry link instead.
-    */
-   if ( g_VehiclesRuntimeInfo[g_iCurrentActiveVehicleRuntimeInfoIndex].bPairedConfirmed || g_bIsFirstConnectionToCurrentVehicle )
+   if ( g_VehiclesRuntimeInfo[g_iCurrentActiveVehicleRuntimeInfoIndex].bPairedConfirmed )
    if ( g_TimeNow > g_RouterIsReadyTimestamp + 500  )
    if ( s_iCountRetriesToGetModelSettingsCommand < 5 )
    {
-      g_VehiclesRuntimeInfo[g_iCurrentActiveVehicleRuntimeInfoIndex].bPairedConfirmed = true;
-      log_line("[Commands] Must sync settings from vehicle...");
       s_iCountRetriesToGetModelSettingsCommand++;
       log_line("[Commands] Current vehicle sw version: %d.%d (b-%d)", get_sw_version_major(g_pCurrentModel), get_sw_version_minor(g_pCurrentModel), get_sw_version_build(g_pCurrentModel));
 
@@ -2004,7 +1996,7 @@ bool _commands_check_send_get_settings()
    }
 
    if ( (NULL != g_pCurrentModel) && (g_pCurrentModel->b_mustSyncFromVehicle || g_bIsFirstConnectionToCurrentVehicle ) && (!g_pCurrentModel->is_spectator))
-   if ( g_pCurrentModel->getVehicleFirmwareType() == MODEL_FIRMWARE_TYPE_RUBY || g_pCurrentModel->getVehicleFirmwareType() == MODEL_FIRMWARE_TYPE_OPENIPC )
+   if ( g_pCurrentModel->getVehicleFirmwareType() == MODEL_FIRMWARE_TYPE_RUBY )
    if ( ! g_bIsVideoPlaying )
    {
       static u32 s_uLastTimeErrorVehicleSync = 0;

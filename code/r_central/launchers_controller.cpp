@@ -89,7 +89,7 @@ void controller_launch_router(bool bSearchMode, int iFirmwareType)
    if ( bSearchMode )
    {
    
-      if ( (g_iSearchSiKAirDataRate >= 0) && (iFirmwareType == MODEL_FIRMWARE_TYPE_RUBY || iFirmwareType == MODEL_FIRMWARE_TYPE_OPENIPC) )
+      if ( (g_iSearchSiKAirDataRate >= 0) && (iFirmwareType == MODEL_FIRMWARE_TYPE_RUBY) )
       {
          if ( g_pControllerSettings->iPrioritiesAdjustment && (g_pControllerSettings->iThreadPriorityRouter > 100) )
             sprintf(szPrefix, "nice -n %d", hw_get_nice_value_for_raw_priority(g_pControllerSettings->iThreadPriorityRouter));

@@ -306,7 +306,7 @@ ruby_rx_telemetry: $(FOLDER_STATION)/ruby_rx_telemetry.o $(MODULE_BASE) $(MODULE
 ruby_tx_rc: $(FOLDER_STATION)/ruby_tx_rc.o $(MODULE_BASE) $(MODULE_BASE2) $(MODULE_COMMON) $(MODULE_RADIO) $(MODULE_MODELS) $(MODULE_STATION) $(FOLDER_BASE)/shared_mem_i2c.o $(FOLDER_BASE)/hardware_audio.o $(FOLDER_BASE)/wiringPiI2C_radxa.o
 	$(CXX) $(_CPPFLAGS) -o $@ $^ $(_LDFLAGS)
 
-ruby_rt_station: $(FOLDER_STATION)/ruby_rt_station.o $(MODULE_BASE) $(MODULE_BASE2) $(MODULE_COMMON) $(MODULE_RADIO) $(MODULE_MODELS) $(MODULE_STATION) $(FOLDER_STATION)/packets_utils.o $(FOLDER_STATION)/process_local_packets.o $(FOLDER_STATION)/process_radio_in_packets.o $(FOLDER_STATION)/process_radio_out_packets.o $(FOLDER_STATION)/periodic_loop.o $(FOLDER_STATION)/processor_rx_audio.o $(FOLDER_STATION)/processor_rx_video.o $(FOLDER_STATION)/video_rx_buffers.o $(FOLDER_STATION)/radio_links.o $(FOLDER_STATION)/relay_rx.o $(FOLDER_STATION)/test_link_params.o $(FOLDER_STATION)/process_video_packets.o $(FOLDER_STATION)/rx_video_output.o $(FOLDER_STATION)/rx_video_recording.o $(FOLDER_STATION)/rx_video_recording_data.o $(FOLDER_BASE)/shared_mem_controller_only.o $(FOLDER_COMMON)/models_connect_frequencies.o $(FOLDER_BASE)/parse_fc_telemetry.o $(FOLDER_BASE)/parse_fc_telemetry_ltm.o $(FOLDER_STATION)/radio_links_sik.o $(FOLDER_BASE)/radio_utils.o $(FOLDER_BASE)/core_plugins_settings.o $(FOLDER_BASE)/camera_utils.o \
+ruby_rt_station: $(FOLDER_STATION)/ruby_rt_station.o $(MODULE_BASE) $(MODULE_BASE2) $(MODULE_COMMON) $(MODULE_RADIO) $(MODULE_MODELS) $(MODULE_STATION) $(FOLDER_STATION)/packets_utils.o $(FOLDER_STATION)/pairing_telemetry.o $(FOLDER_STATION)/process_local_packets.o $(FOLDER_STATION)/process_radio_in_packets.o $(FOLDER_STATION)/process_radio_out_packets.o $(FOLDER_STATION)/periodic_loop.o $(FOLDER_STATION)/processor_rx_audio.o $(FOLDER_STATION)/processor_rx_video.o $(FOLDER_STATION)/video_rx_buffers.o $(FOLDER_STATION)/radio_links.o $(FOLDER_STATION)/relay_rx.o $(FOLDER_STATION)/test_link_params.o $(FOLDER_STATION)/process_video_packets.o $(FOLDER_STATION)/rx_video_output.o $(FOLDER_STATION)/rx_video_recording.o $(FOLDER_STATION)/rx_video_recording_data.o $(FOLDER_BASE)/shared_mem_controller_only.o $(FOLDER_COMMON)/models_connect_frequencies.o $(FOLDER_BASE)/parse_fc_telemetry.o $(FOLDER_BASE)/parse_fc_telemetry_ltm.o $(FOLDER_STATION)/radio_links_sik.o $(FOLDER_BASE)/radio_utils.o $(FOLDER_BASE)/core_plugins_settings.o $(FOLDER_BASE)/camera_utils.o \
 	$(FOLDER_BASE)/parser_h264.o $(FOLDER_BASE)/tx_powers.o $(FOLDER_UTILS)/utils_controller.o $(FOLDER_UTILS)/utils_vehicle.o $(FOLDER_STATION)/generic_rx_ecbuffers.o $(FOLDER_BASE)/hardware_audio.o $(FOLDER_BASE)/wiringPiI2C_radxa.o $(FOLDER_BASE)/msp.o
 	$(CXX) $(_CPPFLAGS) -o $@ $^ $(_LDFLAGS) -ldl
 
@@ -336,7 +336,7 @@ ruby_player_desktop: code/r_player/ruby_player_desktop.o $(FOLDER_BASE)/base.o $
 ifeq ($(RUBY_BUILD_ENV),radxa)
 tests: test_port_rx test_port_tx test_link
 else
-tests: test_gpio test_port_rx test_port_tx test_link
+tests: test_gpio test_port_rx test_port_tx test_link test_pairing_telemetry
 endif
 
 test_cairo:$(FOLDER_TESTS)/test_cairo.o $(MODULE_BASE) $(MODULE_BASE2) $(MODULE_COMMON) $(MODULE_RADIO) $(MODULE_MODELS)
@@ -400,6 +400,16 @@ test_sik_serial_path:$(FOLDER_TESTS)/test_sik_serial_path.o $(MODULE_BASE) $(MOD
 # whose build number is not known yet (it is 0 until the full model settings
 # are received) must not be declared incompatible.
 test_sw_version_compat:$(FOLDER_TESTS)/test_sw_version_compat.o
+	$(CXX) $(_CPPFLAGS) -o $@ $^ $(_LDFLAGS) -ldl -lc
+
+# The pairing from the telemetry regression test. It uses the same code as the
+# controller router ("r_station/pairing_telemetry.h") to decide when a vehicle
+# can be paired from its ruby telemetry packets: when the radio interfaces of
+# the controller can not send any RF packet (receive-only radio links), the
+# vehicle never answers a Ruby pairing request, so the router would keep it in
+# the "pairing in progress" state forever and would drop the video stream it
+# does receive.
+test_pairing_telemetry:$(FOLDER_TESTS)/test_pairing_telemetry.o $(FOLDER_STATION)/pairing_telemetry.o
 	$(CXX) $(_CPPFLAGS) -o $@ $^ $(_LDFLAGS) -ldl -lc
 
 # The ambient capabilities regression test. It calls the real function of the

@@ -1410,6 +1410,33 @@ int hw_get_ruby_process_full_path(const char* szProcess, char* szFullPath, int i
 
    szFullPath[0] = 0;
 
+#if defined HW_PLATFORM_LINUX_GENERIC
+   // On the desktop port (HW_PLATFORM_LINUX_GENERIC) the canonical Ruby
+   // binaries folder is FOLDER_BINARIES (/tmp/ruby/bin/ by default). It
+   // takes precedence over a same-named binary in the current working
+   // directory: the binaries in the canonical folder are on a real
+   // filesystem where file capabilities (to open RF sockets) can be
+   // attached, while the binaries in the current working directory -
+   // usually the developer's source tree - can be on a filesystem that
+   // does not support extended attributes (like fuse mounts), where
+   // capabilities can not be attached.
+   // The spawned Ruby processes are then always executed from the binaries
+   // folder, with the file capabilities they need.
+   char szPath[MAX_FILE_PATH_SIZE];
+   snprintf(szPath, sizeof(szPath)/sizeof(szPath[0]), "%s%s", FOLDER_BINARIES, szProcess);
+   if ( access(szPath, R_OK) != -1 )
+   {
+      strncpy(szFullPath, szPath, iFullPathSize-1);
+      szFullPath[iFullPathSize-1] = 0;
+   }
+   else
+   {
+      // The binary is not in the binaries folder. Fallback to the name as
+      // it is given. The code below completes the sequence.
+      strncpy(szFullPath, szProcess, iFullPathSize-1);
+      szFullPath[iFullPathSize-1] = 0;
+   }
+#else
    // The path as it is given. It can be absolute, or it can be relative, in
    // which case it is relative to the current working directory. It is not
    // searched in the PATH of the environment.
@@ -1425,6 +1452,7 @@ int hw_get_ruby_process_full_path(const char* szProcess, char* szFullPath, int i
       strncpy(szFullPath, szPath, iFullPathSize-1);
       szFullPath[iFullPathSize-1] = 0;
    }
+#endif
 
    // The debug folder, it overrides the path that was found above.
    if ( access("/tmp/debug", R_OK) != -1 )

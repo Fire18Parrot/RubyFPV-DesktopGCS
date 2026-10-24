@@ -564,6 +564,7 @@ int _radio_open_interface_for_read_with_filter(int interfaceIndex, char* szFilte
    char szProgram[512];
    char szErrbuf[PCAP_ERRBUF_SIZE];
 
+
    if ( (NULL == szFilter) || (NULL == szFilterPrism) )
    {
       log_softerror_and_alarm("Invalid filters for opening radio interface for read.");
@@ -643,6 +644,7 @@ int _radio_open_interface_for_read_with_filter(int interfaceIndex, char* szFilte
    }
 
    int nLinkEncap = pcap_datalink(pRadioHWInfo->runtimeInterfaceInfoRx.ppcap);
+
 
    if (nLinkEncap == DLT_IEEE802_11_RADIO)
       sprintf(szProgram, "%s", szFilter);
@@ -758,6 +760,16 @@ int radio_open_interface_for_write(int interfaceIndex)
    // Bad karma
    {
       log_softerror_and_alarm("Tried to open a non 2.4/5.8 radio in high capacity 2.4/5.8 mode.");
+      return -1;
+   }
+
+   // Drivers that can not inject raw RF frames (like the in-kernel rtw88
+   // Realtek drivers) must not be used to send packets: the sending operations
+   // on these drivers hang or the RF packets never reach the vehicle. Use
+   // them only through radio_open_interface_for_read().
+   if ( 0 == pRadioHWInfo->isTxCapable )
+   {
+      log_softerror_and_alarm("Tried to open radio interface %d (%s) for writing, but its driver can not send RF packets.", interfaceIndex+1, pRadioHWInfo->szName);
       return -1;
    }
 

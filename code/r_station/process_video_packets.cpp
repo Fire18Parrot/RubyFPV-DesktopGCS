@@ -102,7 +102,13 @@ void process_received_video_component_packet(int iInterfaceIndex, u8* pPacket, i
    Model* pModel = findModelWithId(uVehicleId, 111);
 
    if ( (NULL == pModel) || ( ! is_sw_version_atleast(pModel, 11, 6)) )
+   {
       return ;
+   }
+
+   if ( pPH->packet_type != PACKET_TYPE_VIDEO_DATA )
+   {
+   }
 
    if ( pPH->packet_type == PACKET_TYPE_VIDEO_DATA )
    {

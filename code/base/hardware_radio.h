@@ -260,6 +260,7 @@ int hardware_radio_is_wifi_radio(radio_hw_info_t* pRadioInfo);
 int hardware_radio_is_serial_radio(radio_hw_info_t* pRadioInfo);
 int hardware_radio_is_elrs_radio(radio_hw_info_t* pRadioInfo);
 int hardware_radio_is_sik_radio(radio_hw_info_t* pRadioInfo);
+int hardware_radio_driver_is_rtw_in_tree(const char* szDriverName);
 int hardware_radio_index_is_high_capacity(int iRadioIndex);
 int hardware_radio_index_is_wifi_radio(int iRadioIndex);
 int hardware_radio_index_is_serial_radio(int iHWInterfaceIndex);

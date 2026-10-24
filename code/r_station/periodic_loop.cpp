@@ -57,6 +57,7 @@
 #include "packets_utils.h"
 #include "rx_video_output.h"
 #include "processor_rx_audio.h"
+#include "pairing_telemetry.h"
 
 u32 s_debugLastFPSTime = 0;
 u32 s_debugFramesCount = 0; 
@@ -219,9 +220,6 @@ void _check_send_pairing_requests()
          continue;
       if ( pModel->is_spectator )
          continue;
-      if ( pModel->getVehicleFirmwareType() != MODEL_FIRMWARE_TYPE_RUBY && pModel->getVehicleFirmwareType() != MODEL_FIRMWARE_TYPE_OPENIPC )
-         continue;
-
       bool bExpectedVehicle = false;
       if ( pModel->uVehicleId == g_pCurrentModel->uVehicleId )
          bExpectedVehicle = true;
@@ -232,6 +230,63 @@ void _check_send_pairing_requests()
         
       if ( ! bExpectedVehicle )
          continue;
+
+      // The Ruby pairing flow needs the vehicle to receive a Ruby pairing
+      // request packet on the current radio links, and to answer it. A non
+      // Ruby vehicle does not use the Ruby pairing flow at all, and a
+      // vehicle on the current radio links of a controller that can not send
+      // any radio packet never receives (nor answers) a Ruby pairing
+      // request. For these vehicles, the telemetry carries the same
+      // announcements as a Ruby pairing confirmation packet (vehicle id,
+      // software version, radio links), so the pairing is accepted from the
+      // telemetry instead.
+      bool bCanSendRubyPairingRequests = (pModel->getVehicleFirmwareType() == MODEL_FIRMWARE_TYPE_RUBY) && (0 != controller_has_radio_interfaces_for_send());
+      if ( ! bCanSendRubyPairingRequests )
+      {
+         int iReasonPairing = pairing_telemetry_can_pair_vehicle(
+            (g_State.vehiclesRuntimeInfo[i].bIsPairingDone) ? 1 : 0,
+            pModel->uVehicleId,
+            g_State.vehiclesRuntimeInfo[i].headerRubyTelemetryExtended.uVehicleId,
+            g_State.vehiclesRuntimeInfo[i].headerRubyTelemetryExtended.rubyVersion,
+            g_State.vehiclesRuntimeInfo[i].uTimeLastRecvRubyTelemetryExtended,
+            g_TimeNow);
+         if ( PAIRING_TELEMETRY_RESULT_PAIR_VEHICLE == iReasonPairing )
+         {
+            u8 uRubyVersionByte = g_State.vehiclesRuntimeInfo[i].headerRubyTelemetryExtended.rubyVersion;
+            u16 uVehicleSoftwareVersion = (u16)((((u32)(uRubyVersionByte & 0xF0)) << 4) | ((u32)(uRubyVersionByte & 0x0F)));
+            log_line("PAIRED_VEHICLE %u from its ruby telemetry on the current radio links (vehicle software version %d.%d). The controller can not send any Ruby pairing request%s.",
+               pModel->uVehicleId, (uVehicleSoftwareVersion>>8) & 0xFF, uVehicleSoftwareVersion & 0xFF, (pModel->getVehicleFirmwareType() == MODEL_FIRMWARE_TYPE_RUBY)?"":" (vehicle is not Ruby)");
+
+            // Announce the pairing to the controller in exactly the format
+            // that a Ruby pairing confirmation packet of the vehicle has.
+            t_packet_header PH;
+            radio_packet_init(&PH, PACKET_COMPONENT_RUBY, PACKET_TYPE_RUBY_PAIRING_CONFIRMATION, STREAM_ID_DATA);
+            PH.vehicle_id_src = pModel->uVehicleId;
+            PH.vehicle_id_dest = g_uControllerId;
+            PH.total_length = sizeof(t_packet_header) + sizeof(u32) + sizeof(u16);
+            u32 uResendCount = g_State.vehiclesRuntimeInfo[i].uPairingRequestId;
+            u8 packet[MAX_PACKET_TOTAL_SIZE];
+            memcpy(packet, (u8*)&PH, sizeof(t_packet_header));
+            memcpy(packet + sizeof(t_packet_header), &uResendCount, sizeof(u32));
+            memcpy(packet + sizeof(t_packet_header) + sizeof(u32), &uVehicleSoftwareVersion, sizeof(u16));
+            radio_packet_compute_crc(packet, PH.total_length);
+            if ( ! ruby_ipc_channel_send_message(g_fIPCToCentral, packet, PH.total_length) )
+               log_softerror_and_alarm("Failed to send the pairing confirmation of vehicle %u (paired from its telemetry) to controller.", pModel->uVehicleId);
+            else
+               send_alarm_to_central(ALARM_ID_CONTROLLER_PAIRING_COMPLETED, pModel->uVehicleId, uVehicleSoftwareVersion);
+            g_State.vehiclesRuntimeInfo[i].bIsPairingDone = true;
+         }
+         else if ( g_State.vehiclesRuntimeInfo[i].uPairingRequestTime + 5000 < g_TimeNow )
+         {
+            static u32 s_uTimeLastLogPairingTelemetryState = 0;
+            if ( g_TimeNow > s_uTimeLastLogPairingTelemetryState + 5000 )
+            {
+               s_uTimeLastLogPairingTelemetryState = g_TimeNow;
+               log_line("Vehicle id %u can not be paired with Ruby pairing requests: reason: %d. Waiting for ruby telemetry on the current radio links.", pModel->uVehicleId, iReasonPairing);
+            }
+         }
+         continue;
+      }
 
       if ( g_TimeNow < g_State.vehiclesRuntimeInfo[i].uPairingRequestTime + g_State.vehiclesRuntimeInfo[i].uPairingRequestInterval )
          continue;
@@ -291,7 +346,12 @@ int _must_inject_ping_now()
    if ( g_bSearching || (NULL == g_pCurrentModel) || g_pCurrentModel->is_spectator || g_pCurrentModel->b_mustSyncFromVehicle )
       return 0;
 
-   if ( g_pCurrentModel->getVehicleFirmwareType() != MODEL_FIRMWARE_TYPE_RUBY && g_pCurrentModel->getVehicleFirmwareType() != MODEL_FIRMWARE_TYPE_OPENIPC )
+   if ( g_pCurrentModel->getVehicleFirmwareType() != MODEL_FIRMWARE_TYPE_RUBY )
+      return 0;
+
+   // Without a radio interface that can send RF packets, the pings of the
+   // controller can not be sent at all.
+   if ( ! controller_has_radio_interfaces_for_send() )
       return 0;
 
    if ( g_pCurrentModel->radioLinksParams.uGlobalRadioLinksFlags & MODEL_RADIOLINKS_FLAGS_DOWNLINK_ONLY )

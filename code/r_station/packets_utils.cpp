@@ -877,6 +877,36 @@ int send_packet_to_radio_interfaces(u8* pPacketData, int nPacketLength, int iSen
    return -1;
 }
 
+// Returns 1 (true) if at least one radio interface of this controller can
+// send data on some radio link: it is opened for sending and its hardware
+// driver can send RF packets. When none can, the controller can only receive
+// packets, and the Ruby packets that need an answer from the vehicle (like
+// the pairing requests or the pings) can not be sent at all.
+int controller_has_radio_interfaces_for_send()
+{
+   for( int i=0; i<hardware_get_radio_interfaces_count(); i++ )
+   {
+      radio_hw_info_t* pRadioHWInfo = hardware_get_radio_info(i);
+      if ( NULL == pRadioHWInfo )
+         continue;
+
+      u32 cardFlags = controllerGetCardFlags(pRadioHWInfo->szMAC);
+
+      if ( cardFlags & RADIO_HW_CAPABILITY_FLAG_DISABLED )
+         continue;
+      if ( ! (cardFlags & RADIO_HW_CAPABILITY_FLAG_CAN_TX) )
+         continue;
+      if ( ! (cardFlags & RADIO_HW_CAPABILITY_FLAG_CAN_USE_FOR_DATA) )
+         continue;
+      if ( ! pRadioHWInfo->isTxCapable )
+         continue;
+      if ( ! g_SM_RadioStats.radio_interfaces[i].openedForWrite )
+         continue;
+      return 1;
+   }
+   return 0;
+}
+
 int get_controller_radio_interface_index_for_radio_link(int iLocalRadioLinkId)
 {
    if ( (iLocalRadioLinkId < 0) || (iLocalRadioLinkId >= g_SM_RadioStats.countLocalRadioLinks) )

@@ -431,9 +431,14 @@ int radio_links_open_rxtx_radio_interfaces()
          }
          else
          {
-            radio_open_interface_for_write(i);
-            g_SM_RadioStats.radio_interfaces[i].openedForWrite = 1;
-            countOpenedForWrite++;
+            if ( 0 == pRadioHWInfo->isTxCapable )
+               log_softerror_and_alarm("Radio interface %d (%s) is marked as a vehicle TX radio link but its driver can not send raw RF packets. Skipping it.", i+1, pRadioHWInfo->szName);
+            else
+            {
+               radio_open_interface_for_write(i);
+               g_SM_RadioStats.radio_interfaces[i].openedForWrite = 1;
+               countOpenedForWrite++;
+            }
          }
       }
    }

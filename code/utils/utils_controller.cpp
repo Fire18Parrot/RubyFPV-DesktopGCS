@@ -42,7 +42,7 @@
 #include "../utils/utils_controller.h"
 #include "../utils/utils_vehicle.h"
 
-#if defined(HW_PLATFORM_RASPBERRY) || defined(HW_PLATFORM_RADXA)
+#if defined(HW_PLATFORM_RASPBERRY) || defined(HW_PLATFORM_RADXA) || defined(HW_PLATFORM_LINUX_GENERIC)
 
 u32 controller_utils_getControllerId()
 {

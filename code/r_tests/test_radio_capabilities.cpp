@@ -2054,6 +2054,43 @@ static void _test_runtime_phy_resolution()
 }
 
 
+// The in-kernel Realtek drivers (rtw88/rtw89) can not inject raw RF frames,
+// so the hardware layer has to mark such radios as receive-only
+// (isTxCapable = 0). If they are marked as capable of sending RF packets, the
+// router tries to send through them, the sends hang or they never reach the
+// vehicle, and the pairing of the vehicle never completes.
+static void _test_rtw_in_tree_driver_classification()
+{
+   printf("\n== Test: in-kernel rtw88 driver classification ==\n");
+
+   _check("an empty driver is not an in-kernel rtw driver", hardware_radio_driver_is_rtw_in_tree(""), 0);
+   _check("a made up driver is not an in-kernel rtw driver", hardware_radio_driver_is_rtw_in_tree("rtl8812au"), 0);
+   _check("the aircrack driver is not an in-kernel rtw driver", hardware_radio_driver_is_rtw_in_tree("8812au"), 0);
+   _check("the in-kernel rtw88 8812au driver is detected", hardware_radio_driver_is_rtw_in_tree("rtw88_8812au"), 1);
+   _check("the in-kernel rtw88 core is detected", hardware_radio_driver_is_rtw_in_tree("rtw88_core"), 1);
+   _check("the in-kernel rtw89 driver is detected", hardware_radio_driver_is_rtw_in_tree("rtw89_8852be"), 1);
+
+   if ( ! radio_cap_is_iw_available() )
+   {
+      printf("  SKIP  the 'iw' tool is not installed\n");
+      return;
+   }
+   hardware_enumerate_radio_interfaces();
+   int iRadios = hardware_get_radio_interfaces_count();
+   for( int i=0; i<iRadios; i++ )
+   {
+      radio_hw_info_t* pRadioHWInfo = hardware_get_radio_info(i);
+      if ( NULL == pRadioHWInfo )
+         continue;
+      int iIsRtw = hardware_radio_driver_is_rtw_in_tree(pRadioHWInfo->szDriver);
+      if ( ! iIsRtw )
+         continue;
+      printf("  INFO  interface %d: [%s] driver [%s] is an in-kernel rtw driver\n",
+         i+1, pRadioHWInfo->szName, pRadioHWInfo->szDriver);
+      _check("the attached in-kernel rtw radio is receive-only", pRadioHWInfo->isTxCapable, 0);
+   }
+}
+
 int main(int argc, char** argv)
 {
    printf("=========================================================\n");
@@ -2085,6 +2122,7 @@ int main(int argc, char** argv)
    _test_raw_txpower_driver_filtering();
    _test_frequency_range_covers_5ghz();
    _test_antenna_guard();
+   _test_rtw_in_tree_driver_classification();
    _test_ruby_process_path_resolver();
    _test_runtime_rtl8812au_discovery();
    _test_runtime_phy_resolution();

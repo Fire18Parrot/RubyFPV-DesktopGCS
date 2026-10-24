@@ -165,7 +165,7 @@ void MenuSearchConnect::Render()
       y += height_text * MENU_ITEM_SPACING;    
    }
 
-   if ( ((g_SearchVehicleRuntimeInfo.headerRubyTelemetryExtended.vehicle_type & MODEL_FIRMWARE_MASK) >> 5) == MODEL_FIRMWARE_TYPE_RUBY || ((g_SearchVehicleRuntimeInfo.headerRubyTelemetryExtended.vehicle_type & MODEL_FIRMWARE_MASK) >> 5) == MODEL_FIRMWARE_TYPE_OPENIPC )
+   if ( ((g_SearchVehicleRuntimeInfo.headerRubyTelemetryExtended.vehicle_type & MODEL_FIRMWARE_MASK) >> 5) == MODEL_FIRMWARE_TYPE_RUBY )
    {
       u8 vMaj = g_SearchVehicleRuntimeInfo.headerRubyTelemetryExtended.rubyVersion;
       u8 vMin = g_SearchVehicleRuntimeInfo.headerRubyTelemetryExtended.rubyVersion;

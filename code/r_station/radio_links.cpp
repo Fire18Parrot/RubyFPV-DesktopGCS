@@ -1066,8 +1066,9 @@ void radio_links_open_rxtx_radio_interfaces()
          }
       }
 
-      if ( g_pCurrentModel->getVehicleFirmwareType() == MODEL_FIRMWARE_TYPE_RUBY || g_pCurrentModel->getVehicleFirmwareType() == MODEL_FIRMWARE_TYPE_OPENIPC )
+      if ( g_pCurrentModel->getVehicleFirmwareType() == MODEL_FIRMWARE_TYPE_RUBY )
       if ( cardFlags & RADIO_HW_CAPABILITY_FLAG_CAN_TX )
+      if ( 0 != pRadioHWInfo->isTxCapable )
       if ( (cardFlags & RADIO_HW_CAPABILITY_FLAG_CAN_USE_FOR_VIDEO) ||
            (cardFlags & RADIO_HW_CAPABILITY_FLAG_CAN_USE_FOR_DATA) )
       if ( ! hardware_radio_is_serial_radio(pRadioHWInfo) )
@@ -1096,11 +1097,15 @@ void radio_links_open_rxtx_radio_interfaces()
    }
 
    if ( 0 == totalCountForWrite )
-   if ( g_pCurrentModel->getVehicleFirmwareType() == MODEL_FIRMWARE_TYPE_RUBY || g_pCurrentModel->getVehicleFirmwareType() == MODEL_FIRMWARE_TYPE_OPENIPC )
+   if ( g_pCurrentModel->getVehicleFirmwareType() == MODEL_FIRMWARE_TYPE_RUBY )
    {
-      log_error_and_alarm("Can't find any TX interfaces for sending data.");
-      radio_links_close_rxtx_radio_interfaces();
-      return;
+      // This side of the radio links can not send any RF packet (no radio
+      // interface on this controller is capable of transmitting). The radio
+      // links stay alive in receive-only mode: the video and the telemetry
+      // of the vehicle can still be received on them, and the pairing of
+      // the vehicle can still be detected from its telemetry.
+      log_softerror_and_alarm("[RadioLinks] No radio interface on this controller can send RF packets. Radio links are used in receive-only mode.");
+      send_alarm_to_central(ALARM_ID_GENERIC, ALARM_ID_GENERIC_TYPE_CONTROLLER_RADIO_TX_UNAVAILABLE, g_pCurrentModel->uVehicleId);
    }
 
    for( int i=0; i<g_pCurrentModel->radioLinksParams.links_count; i++ )
@@ -1118,8 +1123,8 @@ void radio_links_open_rxtx_radio_interfaces()
 
       if ( 0 == countOpenedForWriteForRadioLink[i] )
       if ( (s_iLastAutoAssignmentRadioLink == -1) || (s_iLastAutoAssignmentRadioLink == i) )
-      if ( g_pCurrentModel->getVehicleFirmwareType() == MODEL_FIRMWARE_TYPE_RUBY || g_pCurrentModel->getVehicleFirmwareType() == MODEL_FIRMWARE_TYPE_OPENIPC )
-         log_error_and_alarm("Failed to find or open any TX interface for sending data on vehicle's radio link %d.", i+1);
+      if ( g_pCurrentModel->getVehicleFirmwareType() == MODEL_FIRMWARE_TYPE_RUBY )
+         log_softerror_and_alarm("No TX interface for sending data on vehicle's radio link %d (receive-only radio link).", i+1);
 
       //if ( 0 == countOpenedForReadForRadioLink[i] && 0 == countOpenedForWriteForRadioLink[i] )
       //   send_alarm_to_central(ALARM_ID_CONTROLLER_NO_INTERFACES_FOR_RADIO_LINK,i, 0);

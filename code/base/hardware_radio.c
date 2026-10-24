@@ -283,6 +283,25 @@ int hardware_load_radio_info_into_buffers(int* piOutputTotalCount, int* piOutput
          pRadioInfoArray[i].runtimeInterfaceInfoTx.selectable_fd = -1;
          reset_runtime_radio_rx_info(&pRadioInfoArray[i].runtimeInterfaceInfoTx.radioHwRxInfo);
 
+         // The capability to send raw RF packets is a property of the driver
+         // of the radio, not a setting of the user, so the stale value in
+         // the saved file of the hardware is refreshed from the current
+         // driver of the interface.
+         if ( pRadioInfoArray[i].isTxCapable && (! pRadioInfoArray[i].isSerialRadio) )
+         {
+            char szDriver[128];
+            char szComm[256];
+            sprintf(szComm, "cat /sys/class/net/%s/device/uevent | nice grep DRIVER | sed 's/DRIVER=//'", pRadioInfoArray[i].szName);
+            szDriver[0] = 0;
+            hw_execute_bash_command(szComm, szDriver);
+            removeTrailingNewLines(szDriver);
+            if ( hardware_radio_driver_is_rtw_in_tree(szDriver) )
+            {
+               pRadioInfoArray[i].isTxCapable = 0;
+               log_line("[HW-R] %s is driven by the in-kernel driver %s: the radio is receive-only (no raw RF packets injection).", pRadioInfoArray[i].szName, szDriver);
+            }
+         }
+
          if ( (pRadioInfoArray[i].supportedBands & RADIO_HW_SUPPORTED_BAND_433) ||
               (pRadioInfoArray[i].supportedBands & RADIO_HW_SUPPORTED_BAND_868) ||
               (pRadioInfoArray[i].supportedBands & RADIO_HW_SUPPORTED_BAND_915) )
@@ -1032,7 +1051,21 @@ int _hardware_enumerate_wifi_radios()
       log_line("[HW-R] Minimised driver string: (%s)", pszDriver);
 
       sRadioInfo[i].isSupported = 0;
-      if ( (NULL != strstr(pszDriver,"rtl88xxau")) ||
+      // The in-kernel Realtek drivers (rtw88/rtw89) do not reliably support
+      // the raw RF frame injection that RubyFPV uses to send packets. They
+      // can receive on a monitor interface though, so they are supported as
+      // receive-only radio interfaces.
+      if ( hardware_radio_driver_is_rtw_in_tree(pszDriver) )
+      {
+         s_iHwRadiosSupportedCount++;
+         sRadioInfo[i].isSupported = 1;
+         sRadioInfo[i].isTxCapable = 0;
+         strcpy(sRadioInfo[i].szDescription, "Realtek (receive-only)");
+         sRadioInfo[i].iRadioType = RADIO_TYPE_REALTEK;
+         sRadioInfo[i].iRadioDriver = RADIO_HW_DRIVER_REALTEK_8812AU;
+         log_line("[HW-R] Found in-kernel Realtek (rtw88/rtw89) driver %s for %s. Radio is receive-only (no RF raw packets injection).", pszDriver, sRadioInfo[i].szName);
+      }
+      else if ( (NULL != strstr(pszDriver,"rtl88xxau")) ||
            (NULL != strstr(pszDriver,"8812au")) ||
            (NULL != strstr(pszDriver,"rtl8812au")) ||
            (NULL != strstr(pszDriver,"rtl88XXau")) ||
@@ -1354,17 +1387,65 @@ int hardware_enumerate_radio_interfaces_step(int iStep)
 
 int hardware_radio_get_class_net_adapters_count()
 {
+   // Returns the number of network adapters that are RubyFPV radio-capable
+   // interfaces, using the exact same driver classification rules as used
+   // during radio hardware enumeration (_hardware_enumerate_wifi_radios()).
+   // On desktop machines there are usually other wireless adapters in
+   // /sys/class/net/ (the one used for the machine's own network connection,
+   // typically driven by Intel or other generic Wi-Fi drivers). Those are
+   // not RubyFPV radio interfaces at all: enumeration leaves them alone and
+   // they can't be used for RF raw packets injection/monitoring. The radio
+   // interface watchdog compares the cached radio interfaces count with
+   // the freshly detected one, so both counts must use the same
+   // classification rules, or the watchdog would permanently report radio
+   // hardware changes that never happened.
    char szOutput[1024];
    szOutput[0] = 0;
    hw_execute_bash_command_raw_silent("ls /sys/class/net/", szOutput);
    removeNewLines(szOutput);
-      
+
    int iCount =0;
    char* szToken = strtok(szOutput, "*");
    while ( NULL != szToken )
    {
       if ( NULL != strstr(szToken, "wlan") )
-         iCount++;
+      {
+         // Get the driver of this network interface, exactly as done during
+         // radio hardware enumeration:
+         char szComm[256];
+         char szDriver[256];
+         szDriver[0] = 0;
+         sprintf(szComm, "cat /sys/class/net/%s/device/uevent | nice grep DRIVER | sed 's/DRIVER=//'", szToken);
+         hw_execute_bash_command(szComm, szDriver);
+         removeTrailingNewLines(szDriver);
+         char* pszDriver = szDriver;
+         if ( strlen(szDriver) > 0 )
+         {
+            for( int k=strlen(szDriver)-1; k>0; k-- )
+            {
+               if ( szDriver[k] == '/' )
+               {
+                  pszDriver = &szDriver[k+1];
+                  break;
+               }
+            }
+         }
+         // Same accepted RubyFPV radio drivers as in the enumeration code:
+         if ( strlen(pszDriver) > 0 )
+         if ( hardware_radio_driver_is_rtw_in_tree(pszDriver) ||
+              (NULL != strstr(pszDriver,"rtl88xxau")) ||
+              (NULL != strstr(pszDriver,"rtl88XXau")) ||
+              (NULL != strstr(pszDriver,"8812au")) ||
+              (NULL != strstr(pszDriver,"rtl8812au")) ||
+              (NULL != strstr(pszDriver,"8812eu")) ||
+              (NULL != strstr(pszDriver,"88x2eu")) ||
+              (NULL != strstr(pszDriver,"8733bu")) ||
+              (NULL != strstr(pszDriver,"rtl88x2bu")) ||
+              (NULL != strstr(pszDriver,"rt2800usb")) ||
+              (NULL != strstr(pszDriver,"mt7601u")) ||
+              (NULL != strstr(pszDriver,"ath9k_htc")) )
+            iCount++;
+      }
       szToken = strtok(NULL, "*");
    }
    return iCount;
@@ -2551,6 +2632,15 @@ int hardware_radio_is_wifi_radio(radio_hw_info_t* pRadioInfo)
       return 0;
 
    return hardware_radio_type_is_wifi(pRadioInfo->iRadioType);
+}
+
+int hardware_radio_driver_is_rtw_in_tree(const char* szDriverName)
+{
+   if ( NULL == szDriverName )
+      return 0;
+   if ( 0 == szDriverName[0] )
+      return 0;
+   return ( (NULL != strstr(szDriverName, "rtw88")) || (NULL != strstr(szDriverName, "rtw89")) ) ? 1 : 0;
 }
 
 int hardware_radio_is_serial_radio(radio_hw_info_t* pRadioInfo)

@@ -7,9 +7,14 @@
 # the network connection of the machine, and identifies the TP-Link adapter
 # by its USB hardware ID (2357:0120) instead of by its interface name.
 
-# The TP-Link Archer T2U Plus (RTL8821AU), the intended VTX radio.
-readonly TX_USB_VENDOR="2357"
-readonly TX_USB_PRODUCT="0120"
+# The adapter the scripts act on, identified by USB hardware ID. The kit was
+# written for the TP-Link Archer T2U Plus (RTL8821AU), and the values below
+# are its defaults. Another machine can override them with environment
+# variables, without touching the kit: this machine (the RTL8812AU dongle,
+# 0bda:881a) passes RUBYFPV_TX_USB_VENDOR=0bda, RUBYFPV_TX_USB_PRODUCT=881a
+# and RUBYFPV_IN_TREE_MODULE=rtw88_8812au.
+readonly TX_USB_VENDOR="${RUBYFPV_TX_USB_VENDOR:-2357}"
+readonly TX_USB_PRODUCT="${RUBYFPV_TX_USB_PRODUCT:-0120}"
 
 # The out-of-tree driver.
 readonly OUT_OF_TREE_REPO="https://github.com/aircrack-ng/rtl8812au.git"
@@ -24,8 +29,9 @@ readonly DKMS_VERSION="5.6.4.2-rubyfpv1"
 readonly DKMS_SRC_DIR="/usr/src/${DKMS_PACKAGE}-${DKMS_VERSION}"
 
 # The in-tree driver of the same adapter, the one that is restored when the
-# out-of-tree driver is not wanted any more.
-readonly IN_TREE_MODULE="rtw88_8821au"
+# out-of-tree driver is not wanted any more. Override with the environment
+# when the machine runs a different Realtek in-tree module (see above).
+readonly IN_TREE_MODULE="${RUBYFPV_IN_TREE_MODULE:-rtw88_8821au}"
 
 # The module parameters that RubyFPV needs on the out-of-tree driver.
 #

@@ -2890,6 +2890,7 @@ static int _test_set_radio_interface(int iRadioIndex, const char* szInterface)
    pRadio->isSupported = 1;
    pRadio->isEnabled = 1;
    pRadio->isHighCapacityInterface = 1;
+   pRadio->isTxCapable = 1;
    pRadio->supportedBands = RADIO_HW_SUPPORTED_BAND_23 | RADIO_HW_SUPPORTED_BAND_24 |
         RADIO_HW_SUPPORTED_BAND_25 | RADIO_HW_SUPPORTED_BAND_58;
    pRadio->uCurrentFrequencyKhz = 5800000;
@@ -3068,6 +3069,17 @@ static int _test_rf_rx(int iSeconds, const char* szInterface)
    signal(SIGTERM, _test_signal_handler);
    printf("\n--- RF RX (the VRX side): the packets received on %s ---\n", szInterface);
 
+   loadAllModels();
+
+   // The runtime info must match the real vehicle that is transmitting: the
+   // video is accepted only for a paired vehicle, and the one that transmits
+   // here is the real one (the setup runs this test after the test vehicle
+   // setup, which points the runtime info to the synthetic test vehicle).
+   g_State.vehiclesRuntimeInfo[0].uVehicleId = getCurrentModel()->uVehicleId;
+   g_State.vehiclesRuntimeInfo[0].bIsPairingDone = true;
+   g_State.vehiclesRuntimeInfo[0].bReceivedAnyData = true;
+   g_State.vehiclesRuntimeInfo[0].bIsDoingRetransmissions = false;
+
    if ( ! _test_set_radio_interface(0, szInterface) )
    {
       printf("  ERROR: the radio interface could not be prepared.\n");
@@ -3146,6 +3158,7 @@ static int _test_rf_rx(int iSeconds, const char* szInterface)
       }
 
       t_packet_header* pPH = (t_packet_header*)pBuffer;
+
       if ( (pPH->packet_flags & PACKET_FLAGS_MASK_MODULE) != PACKET_COMPONENT_VIDEO )
          continue;
 
@@ -3157,9 +3170,9 @@ static int _test_rf_rx(int iSeconds, const char* szInterface)
    printf("  The radio interface %s was read for %d seconds.\n", szInterface, iSeconds);
    printf("  The radio packets received: %d, the video packets: %d, the bad packets: %d, the CRC errors: %d.\n",
       iRadioPackets, iVideoPackets, iBadPackets, iCRCErrors);
-   printf("  The outputed video packets: %u, the outputed video blocks: %u.\n",
-      g_SMControllerRTInfo.uOutputedVideoPackets[g_SMControllerRTInfo.iCurrentIndex],
-      g_SMControllerRTInfo.uOutputedVideoBlocks[g_SMControllerRTInfo.iCurrentIndex]);
+    printf("  The outputed video packets: %u, the outputed video blocks: %u.\n",
+       g_SMControllerRTInfo.uOutputedVideoPackets[g_SMControllerRTInfo.iCurrentIndex],
+       g_SMControllerRTInfo.uOutputedVideoBlocks[g_SMControllerRTInfo.iCurrentIndex]);
 
    radio_close_interface_for_read(0);
    return (iVideoPackets > 0) ? 0 : 1;

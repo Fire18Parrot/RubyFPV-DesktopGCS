@@ -1309,7 +1309,7 @@ void MenuSearch::onReturnFromChild(int iChildMenuId, int returnValue)
 
       ruby_set_active_model_id(g_pCurrentModel->uVehicleId);
      
-      if ( g_pCurrentModel->getVehicleFirmwareType() == MODEL_FIRMWARE_TYPE_RUBY || g_pCurrentModel->getVehicleFirmwareType() == MODEL_FIRMWARE_TYPE_OPENIPC )
+      if ( g_pCurrentModel->getVehicleFirmwareType() == MODEL_FIRMWARE_TYPE_RUBY )
          g_pCurrentModel->b_mustSyncFromVehicle = true;
       log_line("MenuSearch: Changed current main vehicle to vehicle id %u", g_pCurrentModel->uVehicleId);
       if ( bIsNew )

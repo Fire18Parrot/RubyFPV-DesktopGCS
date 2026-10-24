@@ -4,7 +4,7 @@ Repository root: `/mnt/Giochi-e-Altro-2/RubyFPV/RubyFPV` (git repo, branch `main
 Target: native x86_64, CachyOS / KDE Plasma 6 / Wayland, SDL2 + Cairo + GStreamer.
 Build: `make -j20 all RUBY_BUILD_ENV=desktop` → `HW_PLATFORM_LINUX_GENERIC`.
 
-Last updated: 2026-10-22. Verified on this machine, in this session.
+Last updated: 2026-10-24. Verified on this machine, in this session.
 
 ---
 
@@ -35,7 +35,8 @@ Last updated: 2026-10-22. Verified on this machine, in this session.
 cd /mnt/Giochi-e-Altro-2/RubyFPV/RubyFPV
 make clean && make -j20 all RUBY_BUILD_ENV=desktop        # 0 errors
 ./test_video_rx_pipeline                   # Tests: 158, Failures: 0
-./test_radio_capabilities                  # Tests: 399, failures: 0
+./test_radio_capabilities                  # Tests: 406, failures: 0
+./test_pairing_telemetry                   # Tests: 9, failures: 0
 ./test_menu_rf_profiles                    # Tests: 43, failures: 0
 ./test_sik_serial_path                     # SiK SERIAL PATH TEST: 25 checks, 0 failure(s)
 ./test_config_persistence                  # Persistent configuration test: 20 checks, 0 failures
@@ -50,7 +51,8 @@ git diff --check                           # clean
 |---|---|---|
 | `test_video_rx_pipeline` | Real video RX path: packet → reassembly/FEC → **RF framing** → FIFO → **forwarding (UDP)** → recording → **retransmission**; plus the **four exact mac80211 monitor radiotap layouts** | 158/158 |
 | `test_video_tx_resend` | **New**: the **vehicle side** of the video path: the real vehicle video TX code (`code/r_vehicle/video_tx_buffers.cpp`) builds and frames the video, and the real vehicle RX code answers a retransmission request | 8/8 and 7/7 |
-| `test_radio_capabilities` | Radio capability model, card models, band guard, **the phy of every radio** | 399/399 |
+| `test_radio_capabilities` | Radio capability model, card models, band guard, **the phy of every radio**, **the in-kernel rtw88 driver classification** | 406/406 |
+| `test_pairing_telemetry` | **New**: the decision to pair a vehicle from its ruby telemetry, with the **same code** as the router (`code/r_station/pairing_telemetry.h`) — the receive-only pairing of §2.15 | 9/9 |
 | `test_menu_rf_profiles` | RF profiles shown in the UI menus | 43/43 |
 | `test_sik_serial_path` | **New**: real SiK detect → open → write → RX thread over a PTY | 25/25 |
 | `test_config_persistence` | **New**: the configuration is in `~/.config/rubyfpv/`, survives a restart, the old settings are migrated without overwriting | 20/20 |
@@ -1066,6 +1068,152 @@ program without any file capability, exactly like the `iw` helper — **does**
 inherit the privileges of the ground station. The test is a real check only
 when it is run with a capability; without one it checks that the function is
 harmless (3 checks, 0 failures).
+
+### 2.15 The black video of the user's session: the root cause, and the receive-only ground station
+
+**Established on 2026-10-24**, from the evidence of the user's own session
+(§2.14), the vehicle protocol of the unmodified upstream source (11.8, in
+`../ruby_original/RubyFPV`) and the disassembly of §4.1:
+
+The user's vehicle announced itself on the air (telemetry and video packets
+were received, 550–570 video packets/sec), but it **never received a single
+packet from the controller**, because every radio interface of this desktop
+is receive-only (the in-kernel `rtw88` driver of the Eachine cannot inject
+raw RF frames, §4.1). The Ruby pairing flow of the upstream source needs the
+controller to **send** a Ruby pairing request to the vehicle, and the vehicle
+pairs only after it received one and answered it
+(`r_vehicle/process_received_ruby_messages.cpp` of the upstream source). The
+vehicle never paired, so the router kept `bIsPairingDone = false`, and the
+**stock video gate** (`processor_rx_video.cpp`,
+`if ( ! pApiObjects->bIsPairingDone ... )` in
+`handleReceivedVideoPacket()`) dropped every video packet it received — the
+video was received on the air and then thrown away. The same missing uplink
+is why no command response, no FC telemetry and no full-settings sync ever
+came back: the vehicle never heard the requests in the first place.
+
+What was changed (all on branch `refactor`, all desktop-relevant, no model
+file touched, no RF transmit added):
+
+1. **The inventions that contradicted the upstream source were reverted**
+   (the user asked to trust the original source over the modified one):
+   `MODEL_FIRMWARE_TYPE_OPENIPC` is gone from `code/base/flags.h`
+   (upstream defines only `MODEL_FIRMWARE_TYPE_RUBY 0`), together with its
+   use in `string_utils.c`, `launchers_controller.cpp`,
+   `menu_search_connect.cpp`, `menu_search.cpp`, `handle_commands.cpp`,
+   `periodic_loop.cpp` and `radio_links.cpp` of both station and vehicle.
+   The gates of the vehicle-settings synchronization in
+   `handle_commands.cpp` are back to the upstream form (`b_mustSyncFromVehicle
+   || first connection` outer condition, firmware == Ruby, `bPairedConfirmed`,
+   five retries); the forced `bPairedConfirmed = true` and the invented
+   "first connection bypasses the pairing flag" gate are gone; the pre-existing
+   desktop additions (the truthful stop after five failed sync attempts with
+   its warning, and the `[SyncTrace]` diagnostics) are kept.
+2. **The receive-only radios are now modeled honestly.** The hardware layer
+   classifies the in-kernel Realtek drivers (`rtw88*`, `rtw89*`) as
+   **`isTxCapable = 0`** (`hardware_radio_driver_is_rtw_in_tree()` in
+   `code/base/hardware_radio.c`; the in-tree `rtw88_8812au` used to hide
+   inside the generic `"8812au"` match and to be declared TX capable). The
+   classification is also **refreshed when a saved radio config file is
+   loaded** (`hardware_load_radio_info_into_buffers()`), so a stale
+   `current_radios.cfg` written by an older binary cannot re-enable TX.
+   `radio_open_interface_for_write()` (`code/radio/radiolink.c`) refuses a
+   card whose driver cannot send RF packets, the station radio open loop
+   (`code/r_station/radio_links.cpp`) skips the pcap TX open for them, and a
+   station that ends up with **zero** TX interfaces **keeps its radio links
+   alive in receive-only mode** instead of the old behavior of closing every
+   interface and aborting. A vehicle radio (`code/r_vehicle/radio_links.cpp`)
+   likewise skips a non-TX driver (vehicles still abort without TX — a
+   vehicle that cannot transmit is useless).
+3. **The pairing has a fallback that needs no uplink**: on a controller that
+   cannot send any RF packet, the router pairs the vehicle from its **ruby
+   telemetry** (`code/r_station/pairing_telemetry.{h,cpp}`, a small pure
+   decision module): the telemetry announces the vehicle id, the software
+   version and the radio links, on the same radio links where the video and
+   the telemetry are received. The telemetry must be **fresh** (≤
+   `PAIRING_TELEMETRY_MAX_FRESHNESS_MS` = 2500 ms, ruby telemetry packets
+   arrive ~every 100 ms), must belong to the expected vehicle id, and must
+   announce a known software version. When it does, the router marks the
+   vehicle paired and announces it to the controller **in the exact format
+   of a real Ruby pairing confirmation packet** (header + resend counter +
+   software version, the format the vehicle sends in the upstream source),
+   so the central's stock handler (`process_router_messages.cpp`,
+   `PACKET_TYPE_RUBY_PAIRING_CONFIRMATION`) runs: `bPairedConfirmed = true`
+   and the stock `ALARM_ID_CONTROLLER_PAIRING_COMPLETED` warning. The video
+   gate then opens, because the vehicle **is** paired — by telemetry instead
+   of by an RF handshake that cannot happen.
+4. **The user is told the truth about what is lost**: a new generic alarm
+   (`ALARM_ID_GENERIC_TYPE_CONTROLLER_RADIO_TX_UNAVAILABLE`, `alarms.h`)
+   states that the radio links are receive-only (video and telemetry work;
+   commands, RC link and pairing requests cannot be sent to the vehicle).
+   The `_must_inject_ping_now()` of the router also stops queueing pings
+   that no interface can send (`controller_has_radio_interfaces_for_send()`
+   in `code/r_station/packets_utils.cpp`).
+
+Regression tests added on the same day: `test_pairing_telemetry` (9/9, the
+pure pairing decision) and the in-kernel-driver section of
+`test_radio_capabilities` (406/406 in total, including the live check that
+the attached `wlan1` is classified receive-only).
+
+### 2.16 The pairing and the live video ARE completed (2026-10-25, the RTL8812AU era)
+
+**Established and verified live on 2026-10-25.** The hardware premise of
+§2.15 changed first: the user attached an **RTL8812AU** dongle (the prepared
+out-of-tree aircrack driver kit, `rtw_monitor_disable_1m=1`), which is both
+monitor- and inject-capable — the uplink of §4/Q1 exists, through the driver
+Q1 proposed. With it: Stage-1 RX and Stage-2b TX injection passed on air, and
+the full app then **paired with the real VTX, synchronized the vehicle
+settings and rendered the live camera feed in the player** (user-confirmed:
+"Yes, video plays"; the router logs show `Received pairing confirmation ...
+CID: 2153624802` → `Pairing confirmed for vehicle VID 2172108829` → the
+`settings synchronized` flag true, and ~550–570 video packets/sec pushed to
+the player FIFO).
+
+Three desktop-port defects still blocked that flow, all found and fixed on
+this day:
+
+1. **The controller ID was literally zero on the desktop.**
+   `controller_utils_getControllerId()` compiles to a stub `{ return 0; }`
+   for every platform other than Raspberry/Radxa (the `#else` branch of
+   `code/utils/utils_controller.cpp`), so every Ruby pairing request was sent
+   with `vehicle_id_src = 0` (the router log: `CID: 0`) and the vehicle —
+   whose handler binds `g_uControllerId = vehicle_id_src` and then answers
+   with a confirmation addressed to that controller — could never bind or
+   answer a valid controller. **Fix:** the implementation guard now also
+   includes `HW_PLATFORM_LINUX_GENERIC`; the ID is generated once and stored
+   in `<FOLDER_CONFIG>/controller_id.cfg` (verified live: ID 2153624802).
+2. **The RF frequency switch failed with `Operation not permitted`.** The
+   capped processes run bare `iw dev <if> set freq ...` (no sudo wrapper); a
+   caller's file capabilities do not propagate to the `iw` child, so the
+   switch failed (`SOFT_ERROR: Failed to switch radio interface ...
+   returned error: [command failed: Operation not permitted]`) and TX was
+   opened "on 0 Mhz" while pairing requests were still reported as sent
+   (enqueued on an unmanaged radio state). **Fix (deliberate system
+   decision):** `setcap cap_net_admin+ep /usr/bin/iw` — the router's next
+   assignment cycle logged `to frequency 5825 Mhz succeeded.` and `Opened
+   radio interface 1 (wlan1) for writing on 5825 Mhz.`
+3. **The watchdog restart loop and the "Socket failed"** (both fixed earlier
+   in the same session, recorded here for the trail):
+   `hardware_radio_get_class_net_adapters_count()` counted every `wlan*`
+   interface while the enumeration cache held only the supported drivers →
+   a permanent "Radio interfaces count has changed" alarm every 5 s; the
+   count helper now mirrors the enumeration's supported-driver equivalence
+   by querying each interface's uevent DRIVER. And
+   `hw_get_ruby_process_full_path()` made the router execute the fuse-mounted
+   repo copy of the binary (file capabilities are impossible there → the TX
+   `socket()` "Operation not permitted"); on the generic desktop the
+   resolver now prefers the canonical `FOLDER_BINARIES` (`/tmp/ruby/bin/`).
+
+The vehicle answers well-formed, actually-transmitted pairing requests —
+the on-air capture of the pre-fix state showed no confirmation because the
+requests were wrought/undeliverable then, not because the vehicle ignored
+them.
+
+Cleanup state: all temporary instrumentation of this session (the
+`DBG-OPEN-READ`/`DBG-VP`/`DBG-MODEL` probes and the packet-type histogram of
+`test_video_rx_pipeline`) is removed; the test keeps the substantive
+`loadAllModels()` call that fixed its current-model lookup. The deployed
+router binary still carries the (harmless) print strings until its next
+restart — `cp` of a running image is refused (`Text file busy`).
 
 ---
 

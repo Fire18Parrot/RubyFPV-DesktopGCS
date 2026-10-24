@@ -239,6 +239,20 @@ void alarms_add_from_vehicle(u32 uVehicleId, u32 uAlarms, u32 uFlags1, u32 uFlag
          warnings_add(uVehicleId, "Telemetry from relayed vehicle recovered", g_idIconCPU, get_Color_IconError());
          return;
       }
+      if ( uFlags1 == ALARM_ID_GENERIC_TYPE_CONTROLLER_RADIO_TX_UNAVAILABLE )
+      {
+         static u32 s_uTimeLastAlarmRadioTxUnavailable = 0;
+         if ( (0 == s_uTimeLastAlarmRadioTxUnavailable) || (g_TimeNow > s_uTimeLastAlarmRadioTxUnavailable + 60000) )
+         {
+            s_uTimeLastAlarmRadioTxUnavailable = g_TimeNow;
+            uIconId = g_idIconRadio;
+            sprintf(szAlarmText, "No radio interface on this controller can send RF packets. The radio links are used only for receiving.");
+            sprintf(szAlarmText2, "The video and the telemetry of the vehicle are received. The commands, the RC link and the Ruby pairing requests can not be sent to the vehicle.");
+            iAlarmTimeoutSeconds = 10;
+         }
+         else
+            return;
+      }
    }
 
    if ( uAlarms & ALARM_ID_FIRMWARE_OLD )

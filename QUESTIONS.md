@@ -813,3 +813,65 @@ asked for.
 - **Status:** open. Black video is not yet explained by the packet counters alone.
 - **Available options / next diagnostics:** check whether frames are actually decoded and delivered, inspect player counters, and capture the decoder/output pipeline output.
 - **Blocks further work?** No for code review; yes for declaring the fix complete.
+
+## Q-new-4 — The root cause of Q-new-3 is established: the ground station has no uplink, and the pairing now falls back to the telemetry
+
+**Status:** resolved on 2026-10-24 by the sources of the system (the
+disassembly of the loaded `rtw88_core.ko`, the upstream vehicle protocol of
+`../ruby_original/RubyFPV`) and by the decision of the user of the same day.
+
+- **Root cause of Q-new-3:** the vehicle received none of the packets of the
+  controller (no uplink at all): every radio interface of this desktop is
+  receive-only (the in-kernel `rtw88` driver of the Eachine cannot inject raw
+  RF frames, `STATUS.md` §4.1), the vehicle therefore never paired, and the
+  **stock** video gate of `processor_rx_video.cpp` dropped every video packet
+  of an unpaired vehicle. The video packets of the log were received on the
+  air and then thrown away. No renderer defect is involved, and the
+  `handle_commands` / `processor_rx_video` gates inspected on the way were
+  **stock** behavior (verified against the unmodified upstream 11.8).
+- **Decision of the user (2026-10-24):** "relative to VTX stuff (but also in
+  general), trust the original source code more than the modified code."
+- **Work done on this decision:** the inventions that contradicted the
+  upstream protocol were reverted (the `MODEL_FIRMWARE_TYPE_OPENIPC` firmware
+  type, the `bPairedConfirmed = true` forcing, the "first connection bypasses
+  the pairing flag" sync gate, and their usages); the kept desktop additions
+  are the truthful stop of the sync after five failed attempts with its
+  warning and the `[SyncTrace]` logs. The receive-only radios are now modeled
+  honestly (`isTxCapable = 0` for in-tree rtw88 drivers, TX opens refused on
+  them, receive-only radio links stay open, the pings are not queued), and
+  the router pairs a vehicle **from its fresh ruby telemetry** when no
+  interface can send (`code/r_station/pairing_telemetry.{h,cpp}`), announcing
+  the pairing to the controller in the exact format of a real Ruby pairing
+  confirmation packet. The user is told what is lost (commands, RC link) by a
+  dedicated alarm.
+- **Still open (needs the real vehicle, no RF transmission needed):** one
+  receive-only session with the VTX powered on, to observe
+  the TX-unavailable alarm → the pairing from the telemetry → the video from
+  now through the paired gate → the honest stop of the settings sync. The
+  durable uplink remains a hardware question (Q1).
+
+## Q-new-5 — RESOLVED: the pairing and the live video are completed (2026-10-25, the RTL8812AU era)
+
+- **What changed:** the user attached a TX-capable RTL8812AU dongle (the
+  out-of-tree aircrack kit prepared in this project's driver work; see §2.16
+  of STATUS.md). With the uplink in place, the full app against the real
+  VTX now: finds the vehicle, completes a real RF pairing (the router logged
+  `Received pairing confirmation ... CID: 2153624802`), sets
+  `bPairedConfirmed = true`, synchronizes the vehicle settings
+  (`settings synchronized` true) and renders the live camera feed — the user
+  confirmed video playback in the app window.
+- **The final root causes of Q-new-3 (both fixed 2026-10-25):**
+  1. `controller_utils_getControllerId()` compiled to `{ return 0; }` on the
+     desktop (the real implementation is guarded to Raspberry/Radxa) — the
+     pairing requests carried controller ID 0 and could never bind a vehicle.
+     Fixed by extending the guard to `HW_PLATFORM_LINUX_GENERIC`; the
+     generated ID is stored in `controller_id.cfg`.
+  2. The RF frequency switch failed from the capped processes (the caller's
+     file capability does not propagate to the `iw` child → `Operation not
+     permitted` → TX opened on an unmanaged channel state). Fixed by
+     `setcap cap_net_admin+ep /usr/bin/iw` (a deliberate system decision).
+  The session also fixed the router radio-count alarm loop and the
+  fuse-copy spawn path (STATUS.md §2.16).
+- **Still open:** swap the deployed router binary for the clean build at the
+  next app stop; re-apply the `iw` capability after system updates; the
+  publication questions (Q-new-1/Q-new-2) stay as they are.
