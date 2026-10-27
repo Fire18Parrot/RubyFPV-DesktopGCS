@@ -242,6 +242,20 @@ void rx_video_output_start_video_streamer()
    #if defined (HW_PLATFORM_LINUX_GENERIC)
    // The desktop player reads the stream from the pipe or from the shared
    // memory, the same way the other players do.
+   // Pass the codec hint to the player: without the -h265 argument the player
+   // is fixed on the H.264 decoder chain and produces no frames at all on an
+   // H.265 video stream (the video is frozen on the last decoded frame).
+   if ( (NULL != g_pCurrentModel) && (g_pCurrentModel->video_params.uVideoExtraFlags & VIDEO_FLAG_GENERATE_H265) )
+      s_uCurrentReceivedVideoStreamType = VIDEO_TYPE_H265;
+   if ( VIDEO_TYPE_H265 == s_uCurrentReceivedVideoStreamType )
+   {
+      if ( 0 != szStreamerParams[0] )
+         strcat(szStreamerParams, " ");
+      strcat(szStreamerParams, "-h265");
+   }
+
+   if ( 0 != szStreamerParams[0] )
+      strcat(szStreamerParams, " ");
    if ( s_bRxVideoOutputUseSM )
       strcat(szStreamerParams, "-sm");
    else if ( s_bRxVideoOutputUsePipe )

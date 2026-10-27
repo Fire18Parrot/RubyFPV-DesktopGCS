@@ -126,7 +126,10 @@ void _parse_msp_osd_command(type_msp_parse_state* pMSPState, bool bAllowScreenUp
          pMSPState->iCountDrawnStrings = 0;
          //if ( ! pMSPState->bEmptyBuffer )
          if ( bAllowScreenUpdate )
+         {
             memcpy(&(pMSPState->uScreenChars[0]), &(pMSPState->uScreenCharsTmp[0]), MAX_MSP_CHARS_BUFFER*sizeof(u16));
+            pMSPState->uLastMSPOSDScreenCommitTime = g_TimeNow;
+         }
          //pMSPState->bEmptyBuffer = true;
          pMSPState->iLastDrawFrameNumber++;
          break;
@@ -135,7 +138,10 @@ void _parse_msp_osd_command(type_msp_parse_state* pMSPState, bool bAllowScreenUp
          pMSPState->iCountDrawnStrings = 0;
          //if ( ! pMSPState->bEmptyBuffer )
          if ( bAllowScreenUpdate )
+         {
             memcpy(&(pMSPState->uScreenChars[0]), &(pMSPState->uScreenCharsTmp[0]), MAX_MSP_CHARS_BUFFER*sizeof(u16));
+            pMSPState->uLastMSPOSDScreenCommitTime = g_TimeNow;
+         }
          pMSPState->bEmptyBuffer = true;
          pMSPState->iLastDrawFrameNumber++;
          //memset(&(pMSPState->uScreenCharsTmp[0]), 0, MAX_MSP_CHARS_BUFFER*sizeof(u16));
@@ -242,5 +248,23 @@ void parse_msp_incoming_data(type_msp_parse_state* pMSPState, u8* pData, int iDa
             break;
       }
       pData++;
+   }
+
+   // Safety net: the MSP DisplayPort subcommands that commit the pending OSD
+   // screen (CLEAR/DRAW_SCREEN/KEEPALIVE) are not always sent as expected. Bus
+   // firmware versions and FC types differ in the values and the ordering they
+   // use, and some stream the screen strings without a final commit command.
+   // Without a commit, the rendered OSD screen stays empty (all the parsed
+   // strings are drawn into a temporary buffer that is never published). If
+   // new strings were drawn and no commit command arrived for a while, commit
+   // the pending screen here, so the OSD is displayed anyway.
+   if ( bAllowScreenUpdate )
+   if ( ! pMSPState->bEmptyBuffer )
+   if ( 0 != pMSPState->iCountDrawnStrings || (0 == pMSPState->uLastMSPOSDScreenCommitTime) )
+   if ( g_TimeNow > pMSPState->uLastMSPOSDScreenCommitTime + 150 )
+   {
+      memcpy(&(pMSPState->uScreenChars[0]), &(pMSPState->uScreenCharsTmp[0]), MAX_MSP_CHARS_BUFFER*sizeof(u16));
+      pMSPState->uLastMSPOSDScreenCommitTime = g_TimeNow;
+      pMSPState->iCountDrawnStrings = 0;
    }
 }

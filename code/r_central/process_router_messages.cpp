@@ -1463,7 +1463,7 @@ int _process_received_message_from_router(u8* pPacketBuffer)
       u8* pTelemetryData = pPacketBuffer + sizeof(t_packet_header)+sizeof(t_packet_header_telemetry_raw);
 
       if ( pRuntimeInfo->pModel->telemetry_params.fc_telemetry_type == TELEMETRY_TYPE_MSP )
-         parse_msp_incoming_data(&(pRuntimeInfo->mspState), pTelemetryData, iDataLen, g_bFreezeOSD);
+         parse_msp_incoming_data(&(pRuntimeInfo->mspState), pTelemetryData, iDataLen, ! g_bFreezeOSD);
 
       if ( g_bOSDPluginsNeedTelemetryStreams )
       {

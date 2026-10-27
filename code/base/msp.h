@@ -72,6 +72,7 @@ typedef struct
    int iCountDrawnStrings;
    int iLastDrawFrameNumber;
    bool bEmptyBuffer;
+   u32 uLastMSPOSDScreenCommitTime; // Soft commit timer (see parse_msp_incoming_data)
 } ALIGN_STRUCT_SPEC_INFO type_msp_parse_state;
 
 void parse_msp_reset_state(type_msp_parse_state* pMSPState);

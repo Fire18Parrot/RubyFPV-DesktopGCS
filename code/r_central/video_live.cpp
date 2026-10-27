@@ -36,8 +36,8 @@
 #include "timers.h"
 #include "video_live.h"
 
-#define VIDEO_LIVE_MAX_WIDTH  1920
-#define VIDEO_LIVE_MAX_HEIGHT 1080
+#define VIDEO_LIVE_MAX_WIDTH  3840
+#define VIDEO_LIVE_MAX_HEIGHT 2160
 
 // Scratch buffers: I420 planes and the converted ARGB frame (BGRA bytes in
 // memory, cairo ARGB32 compatible).

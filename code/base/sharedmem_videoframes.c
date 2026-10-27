@@ -47,8 +47,11 @@ type_shared_mem_video_header* s_pSharedMemVideoRead = NULL;
 long s_lSharedMemVideoReadSize = 0;
 u32 s_uSharedMemVideoLastReadFrameSeq = 0;
 
-#define MAX_VIDEO_WIDTH_SHM  1920
-#define MAX_VIDEO_HEIGHT_SHM 1080
+// The first versions were capped at 1920x1080: any video resolution above
+// 1080p was silently rejected in sharedmem_video_frames_write_frame() and the
+// video was frozen on the last HD frame. 2160p is supported now.
+#define MAX_VIDEO_WIDTH_SHM  3840
+#define MAX_VIDEO_HEIGHT_SHM 2160
 
 #define SIZE_HEADER shm_video_frames_compute_header_size()
 #define SIZE_SLOT   shm_video_frames_compute_slot_size()
