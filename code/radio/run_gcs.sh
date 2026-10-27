@@ -65,6 +65,24 @@ if [ "$(id -u)" -eq 0 ]; then
    fi
 fi
 
+# Detach the dedicated radio interfaces of the ground station from the
+# network manager of the machine. A network manager that keeps managing a
+# monitor mode interface runs background scan cycles on it, and every scan
+# cycle can retune the interface on another frequency or change its type
+# (monitor -> managed). While the interface is drifted like this, the radio
+# links are completely dead: no frame is sent and no frame is received on
+# the expected frequency, until the network manager drifts the interface
+# back (self-recovery) or the ground station is restarted. These monitor
+# interfaces are not network connections of the machine: they must never be
+# managed.
+if command -v iw >/dev/null 2>&1; then
+   for mondev in $(iw dev 2>/dev/null | awk '/Interface/{i=$2} /type monitor/{print i}'); do
+      if command -v nmcli >/dev/null 2>&1; then
+         nmcli device set "$mondev" managed no 2>/dev/null || true
+      fi
+   done
+fi
+
 cd "${RUN_DIR}" || exit 1
 # The runtime directory contains capability-carrying copies of iw and ip,
 # named iw and ip and ahead of their system counterparts, so that the

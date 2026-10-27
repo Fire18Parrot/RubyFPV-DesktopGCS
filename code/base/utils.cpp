@@ -1188,3 +1188,90 @@ void utils_log_radio_packets_sizes()
    sprintf(szBuff, "[Utils] Size of radio t_packet_header_fc_extra: %d bytes", (int)sizeof(t_packet_header_fc_extra));
    log_always(szBuff);
 }
+
+// Periodic verification of the runtime configuration of the WiFi radio
+// interfaces that are used by the application.
+//
+// The problem: the network manager of the machine (NetworkManager and
+// similar) can keep managing the monitor mode interfaces that the
+// application configured and opened for its radio links, running background
+// scan cycles on them. Every scan cycle can reconfigure the interface behind
+// the application's back: change its type (from monitor back to managed) or
+// retune it on another frequency (the channel hopping of the background
+// scans). While an interface is drifted like this, the radio links are
+// completely dead: no frame is sent and no frame is received on the expected
+// frequency, until the network manager drifts the interface back or until
+// the application is restarted.
+//
+// The fix: periodically read back the actual type and frequency of the
+// interfaces (with `iw dev <if> info`), compare them to the frequency that
+// the application configured, log an alarm and restore the interface when
+// something changed its configuration behind our back.
+bool radio_utils_verify_wifi_interfaces_config(u32 uTimeNow)
+{
+   static u32 s_uTimeLastVerifyWifiInterfaces = 0;
+   if ( uTimeNow < s_uTimeLastVerifyWifiInterfaces + 3000 )
+      return true;
+   s_uTimeLastVerifyWifiInterfaces = uTimeNow;
+
+   bool bAllOk = true;
+   int iCount = hardware_get_radio_interfaces_count();
+   for( int i=0; i<iCount; i++ )
+   {
+      radio_hw_info_t* pRadioInfo = hardware_get_radio_info(i);
+      if ( NULL == pRadioInfo )
+         continue;
+      if ( ! hardware_radio_is_wifi_radio(pRadioInfo) )
+         continue;
+      if ( ! pRadioInfo->openedForRead )
+         continue;
+      if ( 0 == pRadioInfo->uCurrentFrequencyKhz )
+         continue;
+      // The interface that carries the network connection of the machine is
+      // never touched.
+      if ( hardware_radio_is_protected_interface(i) )
+         continue;
+
+      char szOutput[512];
+      szOutput[0] = 0;
+      char szCommand[64];
+      sprintf(szCommand, "iw dev %s info", pRadioInfo->szName);
+      hw_execute_process(szCommand, 2000, szOutput, sizeof(szOutput)/sizeof(szOutput[0]));
+
+      bool bModeOk = (NULL != strstr(szOutput, "type monitor"));
+      u32 uFreqMhz = 0;
+      char* pChannel = strstr(szOutput, "channel ");
+      if ( NULL != pChannel )
+      {
+         char* pFreq = strchr(pChannel, '(');
+         if ( (NULL != pFreq) && (pFreq > pChannel) )
+            uFreqMhz = (u32)atoi(pFreq+1);
+      }
+      if ( bModeOk && (0 == uFreqMhz) )
+      {
+         // The configuration of the interface could not be read back (no
+         // frequency reported). Do not touch it on an incomplete read.
+         continue;
+      }
+      bool bFreqOk = ((u32)(pRadioInfo->uCurrentFrequencyKhz/1000) == uFreqMhz);
+      if ( bModeOk && bFreqOk )
+         continue;
+
+      bAllOk = false;
+      log_softerror_and_alarm("[Utils] Radio interface %d (%s) lost its configuration (mode monitor: %s, current frequency: %u MHz, expected frequency: %u MHz). An external component reconfigured it behind our back. Restoring it.",
+         i+1, pRadioInfo->szName, bModeOk?"yes":"no", uFreqMhz, pRadioInfo->uCurrentFrequencyKhz/1000);
+
+      if ( ! bModeOk )
+      {
+         char szCmd[128];
+         sprintf(szCmd, "iw dev %s set type monitor", pRadioInfo->szName);
+         hw_execute_bash_command(szCmd, NULL);
+         hardware_sleep_ms(30);
+      }
+
+      // Restore the frequency (and the related parameters) of the interface.
+      if ( ! radio_utils_set_interface_frequency(NULL, i, -1, pRadioInfo->uCurrentFrequencyKhz, NULL, 0) )
+         log_softerror_and_alarm("[Utils] Failed to restore the frequency of radio interface %d (%s).", i+1, pRadioInfo->szName);
+   }
+   return bAllOk;
+}

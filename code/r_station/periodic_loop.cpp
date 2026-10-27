@@ -41,6 +41,7 @@
 #include "../base/ruby_ipc.h"
 #include "../base/hardware_files.h"
 #include "../base/hardware_procs.h"
+#include "../base/utils.h"
 #include "../common/radio_stats.h"
 #include "../radio/radiolink.h"
 #include "../radio/radio_rx.h"
@@ -633,6 +634,20 @@ void router_periodic_loop()
 
    if ( is_audio_processing_started() )
       periodic_loop_audio();
+
+   // Watchdog: a network manager (or any other component of the machine) can
+   // silently reconfigure the monitor mode radio interfaces that are opened
+   // for the radio links: background scan cycles retune the interface on
+   // another frequency or change its type. While an interface is drifted like
+   // this, the radio links are completely dead (no Rx and no Tx on the
+   // frequency of the radio links) until the interface is restored or the
+   // station is restarted. Verify the state of the interfaces and restore it
+   // when something changed it behind our back.
+   if ( g_TimeNow > g_TimeStart + 3000 )
+   if ( ! test_link_is_in_progress() )
+   if ( ! isNegociatingRadioLink() )
+   if ( ! g_bUpdateInProgress )
+      radio_utils_verify_wifi_interfaces_config(g_TimeNow);
 
    /*
    bool bInterfcesWithNoData = false;

@@ -67,6 +67,19 @@ bool radio_utils_set_interface_frequency(Model* pModel, int iRadioIndex, int iAs
 // The bandwidth is passed as the `iw` channel width argument (HT20, HT40+, ...).
 // Returns true if the interface was configured.
 bool radio_utils_set_interface_frequency_and_bandwidth(int iRadioIndex, u32 uFrequencyKhz, const char* szHTFlag);
+
+// Periodic watchdog: verifies that the WiFi radio interfaces opened by the
+// application are still of type monitor and still on the frequency that the
+// application configured for them. A network manager of the machine
+// (NetworkManager and similar) can keep managing a monitor mode interface and
+// retune it or change its type behind the application's back (background scan
+// cycles), which makes the radio links completely dead until the interface is
+// restored or the application is restarted. Restores the interface and logs an
+// alarm when something changed its configuration. Checks, at most once every
+// 3 seconds, the interfaces that are opened, configurable and not protected.
+// Returns true if all the opened WiFi interfaces are in their expected state.
+bool radio_utils_verify_wifi_interfaces_config(u32 uTimeNow);
+
 bool radio_utils_set_datarate_atheros(Model* pModel, int iCard, int datarate_bps, u32 uDelayMs);
 
 int check_write_filesystem();
