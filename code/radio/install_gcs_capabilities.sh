@@ -28,6 +28,13 @@
 #   CAP_NET_ADMIN   to change the mode, the channel and the power of a radio
 #                   interface.
 #   CAP_NET_RAW     to open the packet socket that the capture uses.
+#   CAP_SETPCAP     required by hardware_raise_ambient_capabilities() to move
+#                   the permitted capabilities into the inheritable set
+#                   (capset) and raise them as ambient, so that the helper
+#                   processes (iw) inherit them. Note: the file "i" flag
+#                   itself never adds a capability to the inheritable set of
+#                   the process (the inheritable set is never expanded by
+#                   execve), so the explicit capset step is required.
 #
 #   The interface that carries the network connection of the machine is never
 #   reconfigured: the application refuses to touch it (see
@@ -76,7 +83,7 @@ RUN_DIR="${TARGET_HOME}/.local/share/rubyfpv/run"
 BINARIES_WITH_CAPS="ruby_start ruby_controller ruby_central ruby_rt_station"
 BINARIES_WITHOUT_CAPS="ruby_logger ruby_player_desktop"
 
-CAPS="cap_net_admin,cap_net_raw"
+CAPS="cap_net_admin,cap_net_raw,cap_setpcap"
 
 if [ "$(id -u)" != "0" ]; then
    echo "ERROR: this script needs the root privileges: pkexec $0" >&2

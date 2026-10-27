@@ -1972,17 +1972,17 @@ int main(int argc, char *argv[])
    hw_execute_ruby_process_wait(NULL, "ruby_tx_telemetry", "-ver", szOutput, 1);
    log_line("ruby_tx_telemetry: [%s]", szOutput);
 
-   if ( !s_isVehicle )
-   {
-      hw_execute_ruby_process_wait(NULL, "ruby_rt_station", "-ver", szOutput, 1);
-      log_line("ruby_rt_station: [%s]", szOutput);
-      hw_execute_ruby_process_wait(NULL, "ruby_rx_telemetry", "-ver", szOutput, 1);
-      log_line("ruby_rx_telemetry: [%s]", szOutput);
-      hw_execute_ruby_process_wait(NULL, "ruby_tx_rc", "-ver", szOutput, 1);
-      log_line("ruby_tx_rc: [%s]", szOutput);
-      hw_execute_ruby_process_wait(NULL, "ruby_central", "-ver", szOutput, 1);
-      log_line("ruby_central: [%s]", szOutput);
-   }
+    if ( !s_isVehicle )
+    {
+       hw_execute_ruby_process_wait(NULL, "ruby_rt_station", "-ver", szOutput, 1);
+       log_line("ruby_rt_station: [%s]", szOutput);
+       hw_execute_ruby_process_wait(NULL, "ruby_rx_telemetry", "-ver", szOutput, 1);
+       log_line("ruby_rx_telemetry: [%s]", szOutput);
+       hw_execute_ruby_process_wait(NULL, "ruby_tx_rc", "-ver", szOutput, 1);
+       log_line("ruby_tx_rc: [%s]", szOutput);
+       hw_execute_ruby_process_wait(NULL, "ruby_central", "-ver", szOutput, 1);
+       log_line("ruby_central: [%s]", szOutput);
+    }
 
    _log_oipc_boot_step("Check for update files...");
 

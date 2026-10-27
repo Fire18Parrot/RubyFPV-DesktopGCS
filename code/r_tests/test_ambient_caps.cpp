@@ -45,11 +45,24 @@
 // process inherits the capabilities.
 //
 // The test needs no privilege: without capabilities it checks that the
-// function is harmless. To check the inheritance, run it in a user namespace
-// that has a capability:
+// function is harmless. To check the inheritance with real capabilities, run
+// it in a user namespace that has a capability (this uses setpriv; the
+// "capsh --keep=1 --uid=1000 ..." form of the first versions of this test
+// fails to exec any child on this kernel 7.3 machine with
+// "cannot execute binary file"):
 //
-//   unshare -U --map-root-user --map-users 1000:100000:1 --map-groups 1000:100000:1 \
-//     capsh --keep=1 --uid=1000 --caps="cap_net_raw+eip" -- ./test_ambient_caps
+//   unshare -U --map-root-user --map-users 1000:100000:1 --map-groups 1000:100000:1 setpriv --reuid=1000 --regid=1000 --clear-groups --bounding-set=-all,+net_raw --inh-caps=+net_raw --ambient-caps=+net_raw ./test_ambient_caps
+//
+// The production way of the ground station: the binary has the file
+// capabilities "…=ep" and the inheritable set is empty. Give the test binary
+// the same file capabilities and run it as the normal user (it needs
+// root privileges to set the capability, but none to run):
+//
+//   setcap cap_net_admin,cap_net_raw,cap_setpcap=ep ./test_ambient_caps
+//   ./test_ambient_caps
+//
+// The child process must then show the permitted capabilities (but not
+// CAP_SETPCAP) as its ambient set.
 
 #include "../base/base.h"
 #include "../base/hardware.h"
@@ -148,16 +161,33 @@ int main()
    printf("  the capability sets of this process: permitted=0x%llx inheritable=0x%llx ambient=0x%llx\n",
       uPermitted, uInheritable, uAmbientBefore);
 
-   // Only a capability that is in both the permitted set and the inheritable
-   // set can be raised as ambient
-   unsigned long long uExpected = uPermitted & uInheritable;
-
    // The ground station starts with an empty ambient set. The test makes sure
    // of that, so that the raise is the only thing that can give the
    // capability to the child process.
    prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0);
    unsigned long long uAmbientCleared = _read_cap_set("CapAmb:");
    _check("the ambient set was empty before the raise", uAmbientCleared, 0ULL);
+
+   // What the child process must get:
+   //   - the legacy way (setpriv/capsh in a user namespace): the capabilities
+   //     are already in the permitted AND in the inheritable set, and only
+   //     those can be raised as ambient;
+   //   - the production way (the file capabilities "…=ep" of the binaries):
+   //     the capabilities are only in the permitted set and
+   //     hardware_raise_ambient_capabilities() moves them into the
+   //     inheritable set with capset() first, which requires CAP_SETPCAP in
+   //     the effective set. CAP_SETPCAP itself is the meta-capability used
+   //     to pass the privileges on: it is never raised as ambient.
+   //     When CAP_SETPCAP is missing, the permitted capabilities cannot be
+   //     passed on at all and this test must fail.
+   unsigned long long uExpected = uPermitted;
+   unsigned long long uSetPcap = ((unsigned long long)1) << CAP_SETPCAP;
+   if ( 0 == (_read_cap_set("CapEff:") & uSetPcap) )
+      uExpected = uPermitted & uInheritable;
+   // CAP_SETPCAP is never raised as ambient: the helper processes don't need
+   // it (it is used here only to pass the other privileges on):
+   uExpected &= ~uSetPcap;
+   uExpected &= ~uAmbientCleared;
 
    // The real function of the ground station
    hardware_raise_ambient_capabilities();

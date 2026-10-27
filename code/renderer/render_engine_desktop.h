@@ -22,6 +22,8 @@ class RenderEngineDesktop: public RenderEngine
      // Present the current frame to screen
      void presentFrame();
 
+     virtual void setVideoFrame(unsigned char* pARGB, int width, int height);
+
      // Poll and dispatch the pending SDL events
      void _processSDLEvents();
 
@@ -103,6 +105,14 @@ class RenderEngineDesktop: public RenderEngine
       SDL_Texture*   m_pSDLTexture;
       Uint32*        m_pBackBuffer[2];   // Raw pixel buffers (double-buffered)
       int            m_iActiveSurface;
+
+      // Merged video mode: the latest decoded video frame, as BGRA (cairo
+      // ARGB32 in memory order), owned by the central video_live module.
+      unsigned char* m_pVideoFrameARGB;
+      int            m_iVideoFrameWidth;
+      int            m_iVideoFrameHeight;
+
+      void _compositeVideoUnderlay();
       
       cairo_surface_t* m_pImages[MAX_RAW_IMAGES];
       u32              m_ImageIds[MAX_RAW_IMAGES];

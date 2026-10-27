@@ -771,6 +771,15 @@ float RenderEngine::getRawFontHeight(u32 fontId)
    return pFont->lineHeight * m_fPixelHeight;
 }
 
+// Default implementation: no video underlay support in engines that do not
+// implement the merged video mode.
+void RenderEngine::setVideoFrame(unsigned char* pARGB, int width, int height)
+{
+   (void)pARGB;
+   (void)width;
+   (void)height;
+}
+
 float RenderEngine::textHeight(u32 fontId)
 {
    return textRawHeight(fontId);

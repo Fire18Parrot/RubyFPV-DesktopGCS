@@ -872,18 +872,18 @@ u8* ruby_ipc_try_read_message(int iChannelUniqueId, u8* pTempBuffer, int* pTempB
    lenReadIPCMsgQueue = msgrcv(iChannelFd, &ipcMessage, IPC_CHANNEL_MAX_MSG_SIZE, 0, MSG_NOERROR | IPC_NOWAIT);
    if ( lenReadIPCMsgQueue > 6 )
    {
-      int iMsgLen = ipcMessage.data[5] + 256*(int)ipcMessage.data[6];
+      int iMsgLen = (unsigned char)ipcMessage.data[5] + 256*(int)(unsigned char)ipcMessage.data[6];
       // The receivers copy the message in buffers of MAX_PACKET_TOTAL_SIZE
       // bytes: a bigger message is invalid.
       if ( (iMsgLen <= 0) || (iMsgLen > MAX_PACKET_TOTAL_SIZE) || (iMsgLen >= IPC_CHANNEL_MAX_MSG_SIZE - 6) )
-         log_softerror_and_alarm("[IPC] Received invalid message on channel %s, id: %d, length: %d", _ruby_ipc_get_channel_name(iChannelType), ipcMessage.data[4], iMsgLen );
+         log_softerror_and_alarm("[IPC] Received invalid message on channel %s, id: %d, length: %d", _ruby_ipc_get_channel_name(iChannelType), (int)(unsigned char)ipcMessage.data[4], iMsgLen );
       else
       {
          u32 uCRC = base_compute_crc32((u8*)&(ipcMessage.data[4]), iMsgLen+3);
          u32 uTmp = 0;
          memcpy((u8*)&uTmp, (u8*)&(ipcMessage.data[0]), sizeof(u32));
          if ( uCRC != uTmp )
-            log_softerror_and_alarm("[IPC] Received invalid CRC on channel %s on message id: %d, CRC computed/received: %u / %u, msg length: %d", _ruby_ipc_get_channel_name(iChannelType), ipcMessage.data[4], uCRC, uTmp, iMsgLen );
+            log_softerror_and_alarm("[IPC] Received invalid CRC on channel %s on message id: %d, CRC computed/received: %u / %u, msg length: %d", _ruby_ipc_get_channel_name(iChannelType), (int)(unsigned char)ipcMessage.data[4], uCRC, uTmp, iMsgLen );
          else
          {
             memcpy(pOutputBuffer, (u8*)&(ipcMessage.data[7]), iMsgLen);

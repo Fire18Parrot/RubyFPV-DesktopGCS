@@ -55,8 +55,8 @@ CENTRAL_RENDER_CODE := $(FOLDER_CENTRAL_RENDERER)/lodepng.o $(FOLDER_CENTRAL_REN
 MODULE_LOC := $(FOLDER_COMMON)/strings_loc.o $(FOLDER_COMMON)/strings_table.o
 
 # The desktop video player decodes the video stream with GStreamer
-GST_CFLAGS := `pkg-config gstreamer-1.0 gstreamer-app-1.0 --cflags`
-GST_LIBS := `pkg-config gstreamer-1.0 gstreamer-app-1.0 --libs`
+GST_CFLAGS := `pkg-config gstreamer-1.0 gstreamer-app-1.0 gstreamer-video-1.0 --cflags`
+GST_LIBS := `pkg-config gstreamer-1.0 gstreamer-app-1.0 gstreamer-video-1.0 --libs`
 else
 
 LDFLAGS_CENTRAL := -L/usr/lib/arm-linux-gnueabihf -lopenmaxil -lbcm_host -lvcos -lvchiq_arm -lpthread -lrt -lm
@@ -251,7 +251,7 @@ else
 station: ruby_start ruby_utils ruby_controller ruby_rt_station ruby_tx_rc ruby_rx_telemetry
 endif
 
-ruby_central: $(FOLDER_CENTRAL)/ruby_central.o $(MODULE_BASE) $(MODULE_MODELS) $(MODULE_COMMON) $(MODULE_BASE2) $(CENTRAL_MENU_ITEMS_ALL) $(CENTRAL_MENU_ALL1) $(CENTRAL_RENDER_CODE) $(CENTRAL_MENU_ALL2) $(CENTRAL_MENU_ALL3) $(CENTRAL_MENU_ALL4) $(CENTRAL_MENU_ALL5) $(CENTRAL_MENU_ALL6) $(CENTRAL_MENU_RC)  $(CENTRAL_MENU_RADIO) $(CENTRAL_POPUP_ALL) $(CENTRAL_RENDER_ALL) $(CENTRAL_OSD_ALL) $(CENTRAL_OLED_ALL) $(CENTRAL_ALL) $(CENTRAL_RADIO) $(FOLDER_BASE)/shared_mem_controller_only.o $(FOLDER_BASE)/hdmi.o $(FOLDER_COMMON)/favorites.o $(FOLDER_BASE)/plugins_settings.o \
+ruby_central: $(FOLDER_CENTRAL)/ruby_central.o $(MODULE_BASE) $(FOLDER_BASE)/sharedmem_videoframes.o  $(MODULE_MODELS) $(MODULE_COMMON) $(MODULE_BASE2) $(CENTRAL_MENU_ITEMS_ALL) $(CENTRAL_MENU_ALL1) $(CENTRAL_RENDER_CODE) $(CENTRAL_MENU_ALL2) $(CENTRAL_MENU_ALL3) $(CENTRAL_MENU_ALL4) $(CENTRAL_MENU_ALL5) $(CENTRAL_MENU_ALL6) $(CENTRAL_MENU_RC)  $(CENTRAL_MENU_RADIO) $(CENTRAL_POPUP_ALL) $(CENTRAL_RENDER_ALL) $(FOLDER_CENTRAL)/video_live.o $(CENTRAL_OSD_ALL) $(CENTRAL_OLED_ALL) $(CENTRAL_ALL) $(CENTRAL_RADIO) $(FOLDER_BASE)/shared_mem_controller_only.o $(FOLDER_BASE)/hdmi.o $(FOLDER_COMMON)/favorites.o $(FOLDER_BASE)/plugins_settings.o \
 	$(FOLDER_BASE)/core_plugins_settings.o $(FOLDER_BASE)/hardware_files.o $(FOLDER_COMMON)/models_connect_frequencies.o $(FOLDER_BASE)/shared_mem_i2c.o $(FOLDER_BASE)/video_capture_res.o $(FOLDER_BASE)/wiringPiI2C_radxa.o $(FOLDER_BASE)/hardware_audio.o
 	$(CXX) $(_CPPFLAGS) $(CFLAGS_RENDERER) -export-dynamic -o $@ $^ $(_LDFLAGS) -ldl $(LDFLAGS_CENTRAL) $(LDFLAGS_CENTRAL2) $(LDFLAGS_RENDERER)
 
@@ -330,7 +330,7 @@ ruby_plugin_gauge_heading: $(FOLDER_PLUGINS_OSD)/ruby_plugin_gauge_heading.o osd
 ruby_player_radxa:code/r_player/ruby_player_radxa.o code/r_player/mpp_core.o $(FOLDER_BASE)/hdmi.o $(FOLDER_BASE)/ctrl_settings.o $(FOLDER_BASE)/shared_mem.o $(FOLDER_BASE)/parser_h264.o $(CENTRAL_RENDER_CODE) $(MODULE_MINIMUM_BASE) $(MODULE_MINIMUM_COMMON)
 	$(CXX) $(_CPPFLAGS) $(CFLAGS_RENDERER) -o $@ $^ $(_LDFLAGS) $(LDFLAGS_RENDERER) $(LDFLAGS_CENTRAL) $(LDFLAGS_CENTRAL2) -ldl -lc -lrockchip_mpp
 
-ruby_player_desktop: code/r_player/ruby_player_desktop.o $(FOLDER_BASE)/base.o $(FOLDER_BASE)/config.o $(FOLDER_BASE)/config_paths.o $(FOLDER_BASE)/hardware.o $(FOLDER_BASE)/hardware_procs.o $(FOLDER_BASE)/hardware_files.o $(FOLDER_BASE)/utils.o $(FOLDER_BASE)/encr.o $(FOLDER_BASE)/gpio.o $(FOLDER_BASE)/hardware_i2c.o $(FOLDER_BASE)/hardware_radio.o $(FOLDER_BASE)/hardware_radio_serial.o $(FOLDER_BASE)/hardware_serial.o $(FOLDER_BASE)/hardware_radio_sik.o $(FOLDER_BASE)/hardware_radio_txpower.o $(FOLDER_BASE)/radio_capabilities.o $(FOLDER_BASE)/radio_profiles.o $(FOLDER_BASE)/ruby_ipc.o $(FOLDER_BASE)/shared_mem.o $(FOLDER_BASE)/controller_rt_info.o $(FOLDER_BASE)/vehicle_rt_info.o $(FOLDER_BASE)/ctrl_preferences.o $(FOLDER_BASE)/ctrl_interfaces.o $(FOLDER_BASE)/alarms.o $(FOLDER_BASE)/commands.o $(FOLDER_BASE)/ctrl_settings.o $(FOLDER_UTILS)/utils_controller.o $(FOLDER_UTILS)/utils_vehicle.o $(FOLDER_COMMON)/string_utils.o $(FOLDER_COMMON)/relay_utils.o $(FOLDER_BASE)/models.o $(FOLDER_BASE)/models_list.o $(FOLDER_BASE)/tx_powers.o
+ruby_player_desktop: code/r_player/ruby_player_desktop.o $(FOLDER_BASE)/base.o $(FOLDER_BASE)/config.o $(FOLDER_BASE)/config_paths.o $(FOLDER_BASE)/hardware.o $(FOLDER_BASE)/hardware_procs.o $(FOLDER_BASE)/hardware_files.o $(FOLDER_BASE)/utils.o $(FOLDER_BASE)/encr.o $(FOLDER_BASE)/gpio.o $(FOLDER_BASE)/hardware_i2c.o $(FOLDER_BASE)/hardware_radio.o $(FOLDER_BASE)/hardware_radio_serial.o $(FOLDER_BASE)/hardware_serial.o $(FOLDER_BASE)/hardware_radio_sik.o $(FOLDER_BASE)/hardware_radio_txpower.o $(FOLDER_BASE)/radio_capabilities.o $(FOLDER_BASE)/radio_profiles.o $(FOLDER_BASE)/ruby_ipc.o $(FOLDER_BASE)/shared_mem.o $(FOLDER_BASE)/controller_rt_info.o $(FOLDER_BASE)/vehicle_rt_info.o $(FOLDER_BASE)/ctrl_preferences.o $(FOLDER_BASE)/ctrl_interfaces.o $(FOLDER_BASE)/alarms.o $(FOLDER_BASE)/commands.o $(FOLDER_BASE)/ctrl_settings.o $(FOLDER_UTILS)/utils_controller.o $(FOLDER_UTILS)/utils_vehicle.o $(FOLDER_COMMON)/string_utils.o $(FOLDER_COMMON)/relay_utils.o $(FOLDER_BASE)/models.o $(FOLDER_BASE)/models_list.o $(FOLDER_BASE)/tx_powers.o $(FOLDER_BASE)/sharedmem_videoframes.o
 	$(CXX) $(_CPPFLAGS) $(CFLAGS_RENDERER) $(GST_CFLAGS) -o $@ $^ $(_LDFLAGS) $(GST_LIBS) -ldl
 
 ifeq ($(RUBY_BUILD_ENV),radxa)

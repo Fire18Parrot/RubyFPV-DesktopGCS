@@ -58,6 +58,8 @@ class RenderEngine
      float getPixelHeight();
      virtual void* getDrawContext();
 
+     virtual void setVideoFrame(unsigned char* pARGB, int width, int height);
+
      float setGlobalAlfa(float alfa);
      float getGlobalAlfa();
      bool isAlphaBlendingEnabled();

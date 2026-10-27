@@ -415,6 +415,21 @@ int load_ControllerSettings()
    if ( (s_CtrlSettings.iThreadPriorityRadioTx < 0) || (s_CtrlSettings.iThreadPriorityRadioTx >= 140) )
       reset_ControllerPriorities();
      
+   #ifdef HW_PLATFORM_LINUX_GENERIC
+   // Desktop port: on the desktop, the application runs as a normal user and
+   // the real-time elevation of the threads is done by the processes
+   // themselves, using the SCHED_FIFO policy and the file capability
+   // cap_sys_nice (attached to the binaries). A nice priority does not
+   // protect the graphics threads of the central process from being starved
+   // by CPU intensive desktop workloads (like AI models inference), which
+   // was observed to block the radio processes and the video link, so on the
+   // desktop the central process always uses a real-time priority, slightly
+   // lower than the priority of the router thread (raw 60 -> SCHED_FIFO 40
+   // for the router, raw 50 -> SCHED_FIFO 50 for the central UI process).
+   if ( s_CtrlSettings.iThreadPriorityCentral > 100 )
+      s_CtrlSettings.iThreadPriorityCentral = 50;
+   #endif
+
    if ( s_CtrlSettings.iRenderFPS < 10 || s_CtrlSettings.iRenderFPS > 30 )
       s_CtrlSettings.iRenderFPS = 15;
 

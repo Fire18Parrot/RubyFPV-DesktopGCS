@@ -98,6 +98,9 @@ RenderEngineDesktop::RenderEngineDesktop()
    
    // Initialize other member variables
    m_iActiveSurface = 0;
+   m_pVideoFrameARGB = NULL;
+   m_iVideoFrameWidth = 0;
+   m_iVideoFrameHeight = 0;
    m_uRenderDrawSurfacesIds[0] = 0;
    m_uRenderDrawSurfacesIds[1] = 1;
 
@@ -384,13 +387,78 @@ bool RenderEngineDesktop::processEvent(SDL_Event* event)
 
       case SDL_WINDOWEVENT:
          if (event->window.event == SDL_WINDOWEVENT_RESIZED) {
-            // Handle window resize - recreate surfaces at new size
+            // Handle window resize: reallocate the back buffers, recreate the
+            // Cairo surfaces and the SDL texture at the new size. The UI and
+            // the video underlay are redrawn at the new dimensions on the
+            // next frame, so the video is never stretched artificially: it is
+            // re-scaled, aspect fit, into the new window size.
             int w = event->window.data1;
             int h = event->window.data2;
-            if (w > 0 && h > 0) {
+            if ( w > 0 && h > 0 && (w != m_iRenderWidth || h != m_iRenderHeight) && m_bSDLInitialized )
+            {
                log_line("[RenderEngineDesktop] Window resized to %dx%d", w, h);
-               // Note: full resize handling would need to reallocate buffers and recreate surfaces
-               // For now, just log it - the app can continue with old dimensions
+
+               int stride = w * 4;
+               for ( int i = 0; i < 2; i++ )
+               {
+                  if ( m_pBackBuffer[i] )
+                  {
+                     free(m_pBackBuffer[i]);
+                     m_pBackBuffer[i] = NULL;
+                  }
+                  m_pBackBuffer[i] = (Uint32*)calloc(w * h, sizeof(Uint32));
+                  if ( NULL == m_pBackBuffer[i] )
+                  {
+                     log_softerror_and_alarm("[RenderEngineDesktop] Failed to allocate back buffer %d (%dx%d) after resize.", i, w, h);
+                     return true;
+                  }
+               }
+
+               if ( m_pCairoCtx )
+               {
+                  cairo_destroy(m_pCairoCtx);
+                  m_pCairoCtx = NULL;
+               }
+               if ( m_pCairoTempCtx )
+               {
+                  cairo_destroy(m_pCairoTempCtx);
+                  m_pCairoTempCtx = NULL;
+               }
+
+               m_iActiveSurface = 0;
+
+               for ( int i = 0; i < 2; i++ )
+               {
+                  if ( NULL != m_pMainCairoSurface[i] )
+                  {
+                     cairo_surface_destroy(m_pMainCairoSurface[i]);
+                  }
+                  m_pMainCairoSurface[i] = cairo_image_surface_create_for_data(
+                     (unsigned char*)m_pBackBuffer[i], CAIRO_FORMAT_ARGB32, w, h, stride);
+                  if ( NULL == m_pMainCairoSurface[i] )
+                  {
+                     log_softerror_and_alarm("[RenderEngineDesktop] Failed to recreate Cairo surface %d after resize.", i);
+                  }
+               }
+
+               if ( NULL != m_pSDLTexture )
+               {
+                  SDL_DestroyTexture(m_pSDLTexture);
+                  m_pSDLTexture = NULL;
+               }
+
+               m_iRenderWidth = w;
+               m_iRenderHeight = h;
+               m_fPixelWidth = 1.0f / (float)w;
+               m_fPixelHeight = 1.0f / (float)h;
+
+               // Recreate the active draw context on the fresh surface.
+               m_pCairoCtx = cairo_create(m_pMainCairoSurface[m_iActiveSurface]);
+               // Signal that the rendering surface changed, so that the UI
+               // frameworks using engine surfaces can reinitialize themselves.
+               m_uRenderDrawSurfacesIds[0]++;
+               m_uRenderDrawSurfacesIds[1]++;
+               log_line("[RenderEngineDesktop] Window resized: buffers and surfaces recreated at %dx%d.", w, h);
             }
          }
          break;
@@ -700,6 +768,55 @@ void RenderEngineDesktop::changeImageHue(u32 uImageId, u8 r, u8 g, u8 b)
    cairo_surface_mark_dirty(m_pImages[indexImage]);
 }
 
+void RenderEngineDesktop::setVideoFrame(unsigned char* pARGB, int width, int height)
+{
+   m_pVideoFrameARGB = pARGB;
+   m_iVideoFrameWidth = width;
+   m_iVideoFrameHeight = height;
+}
+
+// Composites the latest video frame into the back buffer, aspect fit and
+// centered (letterboxed), before the UI/OSD is drawn on top of it.
+void RenderEngineDesktop::_compositeVideoUnderlay()
+{
+   if ( (NULL == m_pVideoFrameARGB) || (m_iVideoFrameWidth < 1) || (m_iVideoFrameHeight < 1) )
+      return;
+   if ( (m_iRenderWidth < 1) || (m_iRenderHeight < 1) )
+      return;
+   if ( ! m_bSDLInitialized )
+      return;
+
+   double dScaleW = (double)m_iRenderWidth / (double)m_iVideoFrameWidth;
+   double dScaleH = (double)m_iRenderHeight / (double)m_iVideoFrameHeight;
+   double dScale = (dScaleW < dScaleH) ? dScaleW : dScaleH;
+   int iOutWidth = (int)((double)m_iVideoFrameWidth * dScale + 0.5);
+   int iOutHeight = (int)((double)m_iVideoFrameHeight * dScale + 0.5);
+   if ( iOutWidth < 1 ) iOutWidth = 1;
+   if ( iOutHeight < 1 ) iOutHeight = 1;
+   if ( iOutWidth > m_iRenderWidth ) iOutWidth = m_iRenderWidth;
+   if ( iOutHeight > m_iRenderHeight ) iOutHeight = m_iRenderHeight;
+   int iDstX = (m_iRenderWidth - iOutWidth) / 2;
+   int iDstY = (m_iRenderHeight - iOutHeight) / 2;
+
+   u32* pDst = m_pBackBuffer[m_iActiveSurface];
+   const u32* pSrc = (const u32*)m_pVideoFrameARGB;
+
+   // The letterbox bars are already black from the clear.
+   for ( int y = 0; y < iOutHeight; y++ )
+   {
+      int iSrcY = (int)(((double)y * (double)m_iVideoFrameHeight) / (double)iOutHeight + 0.5);
+      if ( iSrcY >= m_iVideoFrameHeight ) iSrcY = m_iVideoFrameHeight-1;
+      const u32* pRowSrc = pSrc + (long)iSrcY * m_iVideoFrameWidth;
+      u32* pRowDst = pDst + (long)(iDstY + y) * m_iRenderWidth;
+      for ( int x = 0; x < iOutWidth; x++ )
+      {
+         int iSrcX = (int)(((double)x * (double)m_iVideoFrameWidth) / (double)iOutWidth + 0.5);
+         if ( iSrcX >= m_iVideoFrameWidth ) iSrcX = m_iVideoFrameWidth-1;
+         pRowDst[iDstX + x] = pRowSrc[iSrcX];
+      }
+   }
+}
+
 void RenderEngineDesktop::startFrame()
 {
    if (m_bStartedFrame) return;
@@ -708,7 +825,7 @@ void RenderEngineDesktop::startFrame()
 
    // Switch to back buffer for drawing
    m_iActiveSurface = 1 - m_iActiveSurface;
-   
+
    // Destroy old context and create new one on the active surface
    if (m_pCairoCtx) cairo_destroy(m_pCairoCtx);
    m_pCairoCtx = cairo_create(m_pMainCairoSurface[m_iActiveSurface]);
@@ -716,6 +833,9 @@ void RenderEngineDesktop::startFrame()
    // Clear to transparent/black
    cairo_set_source_rgb(m_pCairoCtx, 0, 0, 0);
    cairo_paint(m_pCairoCtx);
+
+   // Draw the video frame as the underlay, then the UI/OSD is drawn on top.
+   _compositeVideoUnderlay();
 }
 
 void RenderEngineDesktop::endFrame()

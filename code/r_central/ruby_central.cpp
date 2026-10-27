@@ -125,6 +125,7 @@
 #include "quickactions.h"
 #include "oled/oled_render.h"
 #include "video_playback.h"
+#include "video_live.h"
 
 u32 s_idBgImage[5];
 u32 s_idBgImageMenu[5];
@@ -240,6 +241,10 @@ char* _ruby_central_get_star_seq_string(int iSeqId)
 void load_resources()
 {
    loadAllFonts(true);
+
+   // Initialize the merged video mode reader (the video frames shared memory
+   // is created by the player process, opening it here retries lazily).
+   video_live_init();
 
    /*
    s_iBgImageCount = 3;
@@ -686,6 +691,18 @@ void render_all_with_menus(u32 timeNow, bool bRenderMenus, bool bForceBackground
       video_playback_render();
       return;
    }
+
+   // Merged video mode: pull the latest decoded video frame from the player
+   // process (published to shared memory) and hand it to the render engine as
+   // the video underlay, drawn before the UI/OSD over it.
+   video_live_update();
+   int iVideoLiveWidth = 0;
+   int iVideoLiveHeight = 0;
+   unsigned char* pVideoLive = video_live_get_argb(&iVideoLiveWidth, &iVideoLiveHeight);
+   if ( NULL != pVideoLive )
+      g_pRenderEngine->setVideoFrame(pVideoLive, iVideoLiveWidth, iVideoLiveHeight);
+   else
+      g_pRenderEngine->setVideoFrame(NULL, 0, 0);
 
    u32 uTimeStart = get_current_timestamp_ms();
 
@@ -2374,6 +2391,7 @@ void synchronize_shared_mems()
 
 void ruby_processing_loop(bool bNoKeys)
 {
+   static bool s_bPrintLoopTrace = false;
    if ( s_uTimeLastRenderDuration < 10 )
       hardware_sleep_ms(10 - s_uTimeLastRenderDuration);
    g_TimeNow = get_current_timestamp_ms();
@@ -2381,22 +2399,27 @@ void ruby_processing_loop(bool bNoKeys)
    u32 uTimeStart = g_TimeNow;
 
    try_read_messages_from_router(5);
+   if ( ! s_bPrintLoopTrace ) log_line("TRACE: try_read_router done");
    // Read the pending window system events (SDL2 on the desktop) before
    // consuming the input event queue, so that a key press is handled in the
    // same iteration in which it was received.
    if ( NULL != g_pRenderEngine )
       g_pRenderEngine->pollEvents();
+   if ( ! s_bPrintLoopTrace ) log_line("TRACE: poll_events done, render=%p", (void*)g_pRenderEngine);
    keyboard_update_held_keys();
    keyboard_consume_input_events();
+   if ( ! s_bPrintLoopTrace ) log_line("TRACE: keyboard poll done");
    u32 uSumEvent = keyboard_get_triggered_input_events();
 
    if ( uSumEvent & 0xFF0000 )
       warnings_add_input_device_unknown_key((int)((uSumEvent >> 16) & 0xFF));
    handle_commands_loop();
-
+   if ( ! s_bPrintLoopTrace ) log_line("TRACE: handle_commands_loop done");
    pairing_loop();
-
+   if ( ! s_bPrintLoopTrace ) log_line("TRACE: pairing_loop done, started=%d", pairing_isStarted());
    synchronize_shared_mems();
+   s_bPrintLoopTrace = true;
+   log_line("TRACE: one full processing loop iterate done, sequence: %d", s_StartSequence);
 
     if ( g_pControllerSettings->iFreezeOSD )
     if ( g_pControllerSettings->iDeveloperMode )

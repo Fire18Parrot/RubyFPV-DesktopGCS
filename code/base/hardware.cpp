@@ -48,6 +48,7 @@
 #include "config.h"
 #if defined(HW_PLATFORM_LINUX_GENERIC)
 #include <sys/prctl.h>
+#include <sys/syscall.h>  // SYS_capget/SYS_capset
 #include <linux/capability.h>
 #endif
 #include "hardware_procs.h"
@@ -828,7 +829,7 @@ void hardware_raise_ambient_capabilities()
 {
    #if defined(HW_PLATFORM_LINUX_GENERIC)
    unsigned long long uPermitted = 0;
-   unsigned long long uInheritable = 0;
+   unsigned long long uEffective = 0;
 
    FILE* fd = fopen("/proc/self/status", "r");
    if ( NULL == fd )
@@ -841,18 +842,47 @@ void hardware_raise_ambient_capabilities()
    {
       if ( 0 == strncmp(szLine, "CapPrm:", 7) )
          sscanf(szLine+7, "%llx", (unsigned long long*)&uPermitted);
-      if ( 0 == strncmp(szLine, "CapInh:", 7) )
-         sscanf(szLine+7, "%llx", (unsigned long long*)&uInheritable);
+      if ( 0 == strncmp(szLine, "CapEff:", 7) )
+         sscanf(szLine+7, "%llx", (unsigned long long*)&uEffective);
    }
    fclose(fd);
+
+   // File capabilities installed with "setcap ...=ep" land in the permitted
+   // and in the effective sets, but not in the inheritable set. A capability
+   // can be raised as ambient only if it is in the permitted set AND in the
+   // inheritable set, so first the permitted capabilities (all of them,
+   // except CAP_SETPCAP) are added to the inheritable set with capset.
+   // Adding capabilities to the inheritable set requires CAP_SETPCAP to be in
+   // the effective set (it is, on our binaries: the file capabilities include
+   // cap_setpcap). The current permitted and effective sets are kept intact.
+   if ( (uPermitted != 0) && (uEffective & ((unsigned long long)1 << CAP_SETPCAP)) != 0 )
+   {
+      struct __user_cap_header_struct hdr;
+      struct __user_cap_data_struct data[2];
+      unsigned long long uAdd = uPermitted & ~(((unsigned long long)1) << CAP_SETPCAP);
+      memset(&hdr, 0, sizeof(hdr));
+      hdr.version = _LINUX_CAPABILITY_VERSION_2;
+      hdr.pid = 0; // this process
+      data[0].permitted = (u32)(uPermitted & 0xFFFFFFFFLL);
+      data[1].permitted = (u32)((uPermitted >> 32) & 0xFFFFFFFFLL);
+      data[0].effective = (u32)(uEffective & 0xFFFFFFFFLL);
+      data[1].effective = (u32)((uEffective >> 32) & 0xFFFFFFFFLL);
+      data[0].inheritable = (u32)(uAdd & 0xFFFFFFFFLL);
+      data[1].inheritable = (u32)((uAdd >> 32) & 0xFFFFFFFFLL);
+      errno = 0;
+      if ( 0 != syscall(__NR_capset, &hdr, data) )
+         log_softerror_and_alarm("[Hardware] capset failed to add the capabilities to the inheritable set (error: %d). The helper programs (iw) will not inherit privileges.", errno);
+   }
+   else if ( uPermitted != 0 )
+      log_softerror_and_alarm("[Hardware] CAP_SETPCAP is not in the effective set: the capabilities cannot be added to the inheritable set. The helper programs (iw) will not inherit privileges.");
 
    int iRaisedCount = 0;
    for ( int i=0; i<CAP_LAST_CAP; i++ )
    {
+      if ( i == CAP_SETPCAP )
+         continue; // CAP_SETPCAP is not passed to the helper programs
       unsigned long long uMask = ((unsigned long long)1) << i;
       if ( 0 == (uPermitted & uMask) )
-         continue;
-      if ( 0 == (uInheritable & uMask) )
          continue;
       // The capability number is passed to the kernel by value, as the third
       // argument of prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, capability):

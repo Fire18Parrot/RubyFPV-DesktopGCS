@@ -248,6 +248,11 @@ void rx_video_output_start_video_streamer()
       strcat(szStreamerParams, "-p");
    else
       strcat(szStreamerParams, "-sm");
+
+   // Merged video mode: the player does not create a separate video window.
+   // It publishes the decoded frames to shared memory and the central
+   // controller composites them into its own UI window.
+   strcat(szStreamerParams, " -shmsink");
    #endif
 
    if ( 0 != szStreamerParams[0] )

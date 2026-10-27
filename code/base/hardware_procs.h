@@ -86,6 +86,11 @@ void hw_set_current_thread_rt_priority(const char* szLogPrefix, int iNewRawPrior
 void hw_set_current_thread_nice_priority(const char* szLogPrefix, int iNewRawPriority);
 void hw_set_current_proc_nice_priority(const char* szLogPrefix, int iNewRawPriority);
 
+// Elevate the calling process/thread to SCHED_FIFO real-time priority 50.
+// This is used at GCS startup to prevent CPU contention from starving
+// radio TX/RX threads. Requires cap_sys_nice capability (set via ruby_setcaps).
+void hw_set_realtime_priority(void);
+
 #ifdef __cplusplus
 }  
 #endif

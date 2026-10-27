@@ -83,17 +83,21 @@
 
 #include <gst/gst.h>
 #include <gst/app/gstappsrc.h>
+#include <gst/app/gstappsink.h>
+#include <gst/video/video.h>
 
 #include "../base/base.h"
 #include "../base/config.h"
 #include "../base/config_obj_names.h"
 #include "../base/hardware.h"
 #include "../base/hardware_procs.h"
+#include "../base/sharedmem_videoframes.h"
 
 static volatile sig_atomic_t s_bQuit = false;
 static bool s_bDebug = false;
 static bool s_bPlayStreamPipe = false;
 static bool s_bPlayStreamSM = false;
+static bool s_bShmSinkMode = false;
 static bool s_bPlayFile = false;
 static bool s_bUseH265Decoder = false;
 static bool s_bExitOnEnd = false;
@@ -110,6 +114,7 @@ static u8 s_uReadBuffer[PLAYER_READ_BUFFER_SIZE];
 static GstElement* s_pPipeline = NULL;
 static GstElement* s_pAppSrc = NULL;
 static GstElement* s_pDecoder = NULL;
+static GstElement* s_pParser = NULL;
 static GstElement* s_pConvert = NULL;
 static GstElement* s_pSink = NULL;
 static GstBus* s_pBus = NULL;
@@ -138,6 +143,61 @@ static GstPadProbeReturn _player_frame_probe(GstPad* pPad, GstPadProbeInfo* pInf
    (void)pData;
    s_uDecodedFrames++;
    return GST_PAD_PROBE_OK;
+}
+
+
+// In the merged video mode the decoded frames are not displayed in a window
+// by this process. They are published into the shared memory video frames
+// ring, for the central controller to composite them into its own UI window.
+static u32 s_uShmFrameSlot = 0;
+static GstFlowReturn _player_on_new_sample_shm(GstAppSink* pAppsink, gpointer pData)
+{
+   (void)pData;
+
+   GstSample* pSample = gst_app_sink_pull_sample(pAppsink);
+   if ( NULL == pSample )
+      return GST_FLOW_OK;
+
+   GstCaps* pCaps = gst_sample_get_caps(pSample);
+   GstBuffer* pBuffer = gst_sample_get_buffer(pSample);
+   if ( (NULL == pCaps) || (NULL == pBuffer) )
+   {
+      gst_sample_unref(pSample);
+      return GST_FLOW_OK;
+   }
+
+   GstVideoInfo vInfo;
+   gst_video_info_init(&vInfo);
+   if ( ! gst_video_info_from_caps(&vInfo, pCaps) )
+   {
+      gst_sample_unref(pSample);
+      return GST_FLOW_OK;
+   }
+
+   GstMapInfo map;
+   if ( ! gst_buffer_map(pBuffer, &map, GST_MAP_READ) )
+   {
+      gst_sample_unref(pSample);
+      return GST_FLOW_OK;
+   }
+
+   u8* pY = map.data + (gsize)vInfo.offset[0];
+   u8* pU = map.data + (gsize)vInfo.offset[1];
+   u8* pV = map.data + (gsize)vInfo.offset[2];
+
+   sharedmem_video_frames_write_frame(
+      (int)(s_uShmFrameSlot % SHM_VIDEO_FRAMES_SLOTS_COUNT),
+      (int)GST_VIDEO_INFO_WIDTH(&vInfo), (int)GST_VIDEO_INFO_HEIGHT(&vInfo),
+      pY, pU, pV,
+      (int)GST_VIDEO_INFO_PLANE_STRIDE(&vInfo, 0),
+      (int)GST_VIDEO_INFO_PLANE_STRIDE(&vInfo, 1),
+      (int)GST_VIDEO_INFO_PLANE_STRIDE(&vInfo, 2),
+      0);
+   s_uShmFrameSlot++;
+
+   gst_buffer_unmap(pBuffer, &map);
+   gst_sample_unref(pSample);
+   return GST_FLOW_OK;
 }
 
 
@@ -254,9 +314,32 @@ static int _player_create_pipeline(bool bLiveStream)
    }
 
    s_pAppSrc = gst_element_factory_make("appsrc", "ruby-video-source");
-   s_pDecoder = gst_element_factory_make("decodebin", "ruby-video-decoder");
    s_pConvert = gst_element_factory_make("videoconvert", "ruby-video-convert");
 
+   if ( s_bShmSinkMode )
+   {
+      // Merged video mode: no dedicated window is created. The decoded raw
+      // frames are published into the shared memory video frames ring and the
+      // central controller renders them inside its own UI window.
+      // A software decoder chain is used on purpose: GStreamer's decodebin
+      // often negotiates a GPU-memory decoder (NVDEC/CUDA), whose output
+      // frames can not be read by videoconvert into system memory, and the
+      // shared memory ring needs CPU-accessible I420 frames.
+      if ( s_bUseH265Decoder )
+         s_pDecoder = gst_element_factory_make("avdec_h265", "ruby-video-shm-decoder");
+      else
+         s_pDecoder = gst_element_factory_make("avdec_h264", "ruby-video-shm-decoder");
+      s_pParser = gst_element_factory_make("h264parse", "ruby-video-parser");
+      if ( s_bUseH265Decoder && (NULL != s_pParser) )
+      {
+         gst_object_unref(s_pParser);
+         s_pParser = gst_element_factory_make("h265parse", "ruby-video-parser");
+      }
+      s_pSink = gst_element_factory_make("appsink", "ruby-video-shm-sink");
+   }
+   else
+   {
+   s_pDecoder = gst_element_factory_make("decodebin", "ruby-video-decoder");
    // The video sink is a real window. On Wayland it is the waylandsink, on X11
    // it is the ximagesink, and the autovideosink is the fallback.
    s_pSink = gst_element_factory_make("waylandsink", "ruby-video-sink");
@@ -264,6 +347,7 @@ static int _player_create_pipeline(bool bLiveStream)
       s_pSink = gst_element_factory_make("ximagesink", "ruby-video-sink");
    if ( NULL == s_pSink )
       s_pSink = gst_element_factory_make("autovideosink", "ruby-video-sink");
+   }
 
    if ( (NULL == s_pAppSrc) || (NULL == s_pDecoder) || (NULL == s_pConvert) || (NULL == s_pSink) )
    {
@@ -271,6 +355,39 @@ static int _player_create_pipeline(bool bLiveStream)
       return -1;
    }
 
+   if ( s_bShmSinkMode )
+   {
+      if ( (NULL == s_pParser) )
+      {
+         log_error_and_alarm("[PlayerDesktop] Failed to create the bitstream parser of the GStreamer pipeline.");
+         return -1;
+      }
+      gst_bin_add_many(GST_BIN(s_pPipeline), s_pAppSrc, s_pParser, s_pDecoder, s_pConvert, s_pSink, NULL);
+      if ( ! gst_element_link(s_pAppSrc, s_pParser) )
+      {
+         log_error_and_alarm("[PlayerDesktop] Failed to link the source to the bitstream parser.");
+         return -1;
+      }
+      if ( ! gst_element_link(s_pParser, s_pDecoder) )
+      {
+         log_error_and_alarm("[PlayerDesktop] Failed to link the bitstream parser to the software decoder.");
+         return -1;
+      }
+      if ( ! gst_element_link(s_pDecoder, s_pConvert) )
+      {
+         log_error_and_alarm("[PlayerDesktop] Failed to link the software decoder to the video converter.");
+         return -1;
+      }
+      if ( ! gst_element_link(s_pConvert, s_pSink) )
+      {
+         log_error_and_alarm("[PlayerDesktop] Failed to link the video converter to the shared memory sink.");
+         return -1;
+      }
+      // No dynamic pads in the explicit chain: the codec is known.
+      s_bCodecDetected = true;
+   }
+   else
+   {
    gst_bin_add_many(GST_BIN(s_pPipeline), s_pAppSrc, s_pDecoder, s_pConvert, s_pSink, NULL);
    if ( ! gst_element_link(s_pAppSrc, s_pDecoder) )
    {
@@ -283,12 +400,25 @@ static int _player_create_pipeline(bool bLiveStream)
       return -1;
    }
    g_signal_connect(s_pDecoder, "pad-added", G_CALLBACK(_player_on_decoder_pad_added), NULL);
+   }
 
    // The stream is a raw elementary stream, without a container and without
    // timestamps, so the source is a byte stream.
    g_object_set(s_pAppSrc, "format", GST_FORMAT_BYTES, "block", FALSE, NULL);
    g_object_set(s_pAppSrc, "max-bytes", (guint64)PLAYER_APPSRC_MAX_BYTES, NULL);
    g_object_set(s_pAppSrc, "leaky-type", GST_APP_LEAKY_TYPE_UPSTREAM, NULL);
+
+   if ( s_bShmSinkMode && (NULL != s_pSink) )
+   {
+      // Raw I420 frames are pushed to the shared memory ring. New frames
+      // replace old ones; the consumer reads only the latest published frame.
+      GstCaps* pCapsSink = gst_caps_from_string("video/x-raw,format=I420");
+      g_object_set(s_pSink, "caps", pCapsSink, "emit-signals", TRUE, "sync", FALSE, "drop", TRUE, "max-buffers", (guint)3, NULL);
+      if ( NULL != pCapsSink )
+         gst_caps_unref(pCapsSink);
+      g_signal_connect(s_pSink, "new-sample", G_CALLBACK(_player_on_new_sample_shm), NULL);
+      log_line("[PlayerDesktop] Using the appsink (merged video mode): decoded frames are published to shared memory.");
+   }
 
    if ( bLiveStream )
    {
@@ -668,6 +798,7 @@ int main(int argc, char* argv[])
       printf("\nUsage: ruby_player_desktop [params]\nParams:\n\n");
       printf("-p Play the live video stream from the pipe\n");
       printf("-sm Play the live video stream from the sharedmem\n");
+      printf("-shmsink publish decoded frames to shared memory for the central UI (merged video mode)\n");
       printf("-h265 use the H265 decoder\n");
       printf("-file [filename] play a file\n");
       printf("-fps [fps]\n");
@@ -685,6 +816,14 @@ int main(int argc, char* argv[])
          s_bPlayStreamPipe = true;
       else if ( 0 == strcmp(argv[i], "-sm") )
          s_bPlayStreamSM = true;
+      else if ( 0 == strcmp(argv[i], "-shmsink") )
+      {
+         s_bShmSinkMode = true;
+         if ( 0 != sharedmem_video_frames_open_for_write() )
+            log_error_and_alarm("[PlayerDesktop] Failed to open the shared memory video frames for write.");
+         else
+            log_line("[PlayerDesktop] Merged video mode: decoded frames are published to shared memory.");
+      }
       else if ( 0 == strcmp(argv[i], "-h265") )
          s_bUseH265Decoder = true;
       else if ( 0 == strcmp(argv[i], "-endexit") )
@@ -809,6 +948,12 @@ int main(int argc, char* argv[])
    {
       gst_object_unref(s_pPipeline);
       s_pPipeline = NULL;
+   }
+
+   if ( s_bShmSinkMode )
+   {
+      sharedmem_video_frames_close_write();
+      log_line("[PlayerDesktop] Closed the shared memory video frames (merged video mode).");
    }
 
    log_line("[PlayerDesktop] Exit. Video stream: %u bytes read, %u bytes pushed, %u frames decoded, codec detected: %s.",
