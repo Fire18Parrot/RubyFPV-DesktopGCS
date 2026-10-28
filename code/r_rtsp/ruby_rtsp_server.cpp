@@ -60,6 +60,7 @@
 
 #include <gst/gst.h>
 #include <gst/rtsp-server/rtsp-server.h>
+#include <glib-unix.h>
 
 #include "../base/base.h"
 #include "../base/config.h"
@@ -72,10 +73,14 @@ static bool s_bDebug = false;
 static bool s_bUseH265 = false;
 static int s_iPort = 8554;
 
+static GMainLoop* s_pMainLoop = NULL;
+
 static void _handle_signal(int sig)
 {
    (void)sig;
    s_bQuit = true;
+   if ( NULL != s_pMainLoop )
+      g_main_loop_quit(s_pMainLoop);
 }
 
 static void _parse_arguments(int argc, char* argv[])
@@ -88,7 +93,7 @@ static void _parse_arguments(int argc, char* argv[])
          s_bDebug = true;
       else if ( 0 == strcmp(argv[i], "-ver") )
       {
-         printf("RubyRTSPServer version %s\n", SOFTWARE_VERSION_STRING);
+         printf("RubyRTSPServer version %d.%d (b-%d)\n", SYSTEM_SW_VERSION_MAJOR, SYSTEM_SW_VERSION_MINOR, SYSTEM_SW_BUILD_NUMBER);
          exit(0);
       }
       else if ( 0 == strcmp(argv[i], "-port") )
@@ -131,7 +136,6 @@ int main(int argc, char* argv[])
 
    gst_init(&argc, &argv);
 
-   GError* pError = NULL;
    GstRTSPServer* pServer = gst_rtsp_server_new();
    if ( NULL == pServer )
    {
@@ -148,15 +152,18 @@ int main(int argc, char* argv[])
 
    GstRTSPMediaFactory* pFactory = gst_rtsp_media_factory_new();
    // The video is passed through as is (no decoding, no reencoding). The
-   // parsers re-insert the SPS/PPS/VPS headers periodically
-   // (config-interval=-1) so that a client can join at any time, without
-   // waiting for a full keyframe from the vehicle.
+   // source is a pushfilesrc (not a plain filesrc): it timestamps the
+   // buffers as they arrive from the named pipe, like a live source does,
+   // which is required for a proper RTP packetization. The parsers
+   // re-insert the SPS/PPS/VPS headers periodically (config-interval=-1) so
+   // that a client can join at any time, without waiting for a full
+   // keyframe from the vehicle.
    if ( s_bUseH265 )
       gst_rtsp_media_factory_set_launch(pFactory,
-         "filesrc location=" FIFO_RUBY_STATION_VIDEO_STREAM_RTSP " blocksize=65536 ! h265parse ! rtph265pay name=pay0 pt=96 config-interval=-1");
+         "pushfilesrc location=" FIFO_RUBY_STATION_VIDEO_STREAM_RTSP " ! h265parse ! rtph265pay name=pay0 pt=96 config-interval=-1");
    else
       gst_rtsp_media_factory_set_launch(pFactory,
-         "filesrc location=" FIFO_RUBY_STATION_VIDEO_STREAM_RTSP " blocksize=65536 ! h264parse ! rtph264pay name=pay0 pt=96 config-interval=-1");
+         "pushfilesrc location=" FIFO_RUBY_STATION_VIDEO_STREAM_RTSP " ! h264parse ! rtph264pay name=pay0 pt=96 config-interval=-1");
 
    // A single media pipeline is shared by all the connected clients.
    gst_rtsp_media_factory_set_shared(pFactory, TRUE);
@@ -177,6 +184,11 @@ int main(int argc, char* argv[])
    log_line("[RTSPServer] Connect with: rtsp://<this computer ip>:%s/video", szPort);
 
    GMainLoop* pLoop = g_main_loop_new(NULL, FALSE);
+   s_pMainLoop = pLoop;
+   // Exit cleanly on SIGTERM/SIGINT (the station kills the process when it
+   // must be restarted, for example on a video codec change).
+   g_unix_signal_add(SIGTERM, G_SOURCE_FUNC(_handle_signal), NULL);
+   g_unix_signal_add(SIGINT, G_SOURCE_FUNC(_handle_signal), NULL);
    g_main_loop_run(pLoop);
 
    log_line("[RTSPServer] Finished. RTSP server stopped.");
