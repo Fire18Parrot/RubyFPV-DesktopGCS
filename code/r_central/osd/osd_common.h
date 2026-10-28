@@ -108,6 +108,7 @@ void osd_rotate_point(float x, float y, float xCenter, float yCenter, float angl
 
 bool osd_load_resources();
 void osd_reload_msp_resources();
+void osd_ensure_msposd_resources();
 void osd_apply_preferences();
 
 float osd_getScaleOSD();

@@ -1461,7 +1461,16 @@ void RenderEngineDesktop::bltSprite(float xPosDest, float yPosDest, int iSrcX, i
                                      int iSrcWidth, int iSrcHeight, u32 uImageId)
 {
    // Blit a region of the image, without scaling it.
-   bltImage(xPosDest, yPosDest, (float)iSrcWidth, (float)iSrcHeight, iSrcX, iSrcY, iSrcWidth, iSrcHeight, uImageId);
+   // Same as RenderEngineRaw::bltSprite: the destination size must be the
+   // source sprite pixel size (36x54 or 24x36 pixels for the MSP OSD font
+   // glyph cells). bltImage() takes the destination size as a fraction of the
+   // render surface, so the pixel size must be converted to normalized units.
+   // Passing the raw pixel values made each sprite occupy 36 times the render
+   // surface width: a giant solid rectangle painted over the video, instead
+   // of the OSD.
+   bltImage(xPosDest, yPosDest,
+      (float)iSrcWidth / (float)m_iRenderWidth, (float)iSrcHeight / (float)m_iRenderHeight,
+      iSrcX, iSrcY, iSrcWidth, iSrcHeight, uImageId);
 }
 
 void RenderEngineDesktop::drawIcon(float xPos, float yPos, float fWidth, float fHeight, u32 uIconId)

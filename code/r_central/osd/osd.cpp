@@ -2760,6 +2760,14 @@ void osd_render_warnings()
    osd_warnings_render();
 }
 
+// One time trace helpers for the MSP OSD rendering. Render failures here are
+// silent on screen (nothing is drawn), so log exactly once what the render
+// saw, to diagnose why the MSP OSD is not displayed.
+static bool s_bLoggedMSPOSDMissingAtlas = false;
+static int  s_iCountMSPOSDRenderOneTimeLogs = 0;
+static bool s_bLoggedMSPRenderNoRuntimeInfo = false;
+static bool s_bLoggedMSPRenderNotReady = false;
+
 void osd_render_msposd_buffer(int iFCType, int iOSDFontType, int iCols, int iRows, u16* pCharBuffer)
 {
    if ( (iCols <= 0) || (iRows <= 0) || (NULL == pCharBuffer) )
@@ -2793,6 +2801,26 @@ void osd_render_msposd_buffer(int iFCType, int iOSDFontType, int iCols, int iRow
       iImgCharWidth = 24;
       iImgCharHeight = 36;    
    }
+
+   // The font atlases have a different number of glyph pages (columns) for
+   // each FC type (Betaflight: 4, INAV: 2, Ardupilot: 1). The loaded atlas
+   // image size defines the glyph cell and the available page count.
+   int iAtlasWidth = g_pRenderEngine->getImageWidth(uImgId);
+   int iAtlasHeight = g_pRenderEngine->getImageHeight(uImgId);
+   if ( (iAtlasWidth < iImgCharWidth) || (iAtlasHeight < iImgCharHeight) )
+   {
+      if ( ! s_bLoggedMSPOSDMissingAtlas )
+      {
+         s_bLoggedMSPOSDMissingAtlas = true;
+         log_softerror_and_alarm("[OSD] MSP OSD render: the font atlas image %u is not loaded (got %dx%d, need glyph cell %dx%d).", uImgId, iAtlasWidth, iAtlasHeight, iImgCharWidth, iImgCharHeight);
+      }
+      return;
+   }
+
+   int iAtlasPages = iAtlasWidth / iImgCharWidth;
+   if ( iAtlasPages < 1 )
+      iAtlasPages = 1;
+
    float fScreenCharWidth = (1.0 - 2.0*osd_getMarginX()) / (float)iCols;
    float fScreenCharHeight = (1.0 - 2.0*osd_getMarginY()) / (float)iRows;
 
@@ -2811,6 +2839,7 @@ void osd_render_msposd_buffer(int iFCType, int iOSDFontType, int iCols, int iRow
       fStartPosY += pP->iMSPOSDDeltaY * fScreenCharHeight;
    }
 
+   int iCountRenderedChars = 0;
    for( int y=0; y<iRows; y++ )
    for( int x=0; x<iCols; x++ )
    {
@@ -2819,11 +2848,28 @@ void osd_render_msposd_buffer(int iFCType, int iOSDFontType, int iCols, int iRow
          continue;
       u8 uPage = uChar >> 8;
 
-      int iImgSrcX = ((int)(uPage & 0x03)) * iImgCharWidth;
+      // Draw commands carry 2 attribute bits (page 0..3), but the FC font
+      // atlases can have less pages (INAV has 2, Ardupilot has 1). Clamp the
+      // page to what the loaded atlas has, else the sprite source would point
+      // outside the image and the character is silently not drawn.
+      int iPage = (int)(uPage & 0x03);
+      if ( iPage >= iAtlasPages )
+         iPage = iAtlasPages - 1;
+
+      int iImgSrcX = iPage * iImgCharWidth;
       int iImgSrcY = ((int)(uChar & 0xFF)) * iImgCharHeight;
+      if ( iImgSrcY + iImgCharHeight > iAtlasHeight )
+         continue;
 
       g_pRenderEngine->bltSprite(fStartPosX + x * fScreenCharWidth, fStartPosY + y * fScreenCharHeight,
          iImgSrcX, iImgSrcY, iImgCharWidth, iImgCharHeight, uImgId);
+      iCountRenderedChars++;
+   }
+
+   if ( (iCountRenderedChars > 0) && (0 == s_iCountMSPOSDRenderOneTimeLogs) )
+   {
+      s_iCountMSPOSDRenderOneTimeLogs++;
+      log_line("[OSD] MSP OSD: rendered %d OSD chars (buffer %d cols x %d rows), atlas %dx%d, glyph cell %dx%d, %d glyph pages.", iCountRenderedChars, iCols, iRows, iAtlasWidth, iAtlasHeight, iImgCharWidth, iImgCharHeight, iAtlasPages);
    }
 }
 
@@ -2834,12 +2880,26 @@ void _osd_render_msp(Model* pModel)
 
    t_structure_vehicle_info* pRuntimeInfo = get_vehicle_runtime_info_for_vehicle_id(pModel->uVehicleId);
    if ( NULL == pRuntimeInfo )
+   {
+      if ( ! s_bLoggedMSPRenderNoRuntimeInfo )
+      {
+         s_bLoggedMSPRenderNoRuntimeInfo = true;
+         log_softerror_and_alarm("[OSD] MSP OSD render: no runtime info for vehicle %u, can't render the MSP OSD.", pModel->uVehicleId);
+      }
       return;
+   }
 
    if ( (pRuntimeInfo->mspState.headerTelemetryMSP.uMSPOSDRows == 0) ||
         (pRuntimeInfo->mspState.headerTelemetryMSP.uMSPOSDCols == 0) ||
         ((pRuntimeInfo->mspState.headerTelemetryMSP.uMSPFlags & MSP_FLAGS_FC_TYPE_MASK) == 0) )
+   {
+      if ( ! s_bLoggedMSPRenderNotReady )
+      {
+         s_bLoggedMSPRenderNotReady = true;
+         log_line("[OSD] MSP OSD render: the MSP OSD state is not ready yet (rows: %u, cols: %u, FC flags: %08X). Will try again.", pRuntimeInfo->mspState.headerTelemetryMSP.uMSPOSDRows, pRuntimeInfo->mspState.headerTelemetryMSP.uMSPOSDCols, pRuntimeInfo->mspState.headerTelemetryMSP.uMSPFlags);
+      }
       return;
+   }
 
    osd_render_msposd_buffer(pRuntimeInfo->mspState.headerTelemetryMSP.uMSPFlags & MSP_FLAGS_FC_TYPE_MASK,
       pModel->osd_params.uFlags & OSD_BIT_FLAGS_MASK_MSPOSD_FONT,
@@ -2881,6 +2941,14 @@ void osd_show_monitor()
 
 void osd_render_all()
 {
+   // The MSP OSD font atlases are selected when they are loaded, depending on
+   // the render surface height at that moment (small fonts for heights of 800
+   // pixels and below, large fonts above). If the surface size changed after
+   // that (for example when maximizing or restoring the window), reload the
+   // atlases to match, else the glyph cell size and the loaded atlas are out
+   // of sync.
+   osd_ensure_msposd_resources();
+
    bool bAlphaEnabled = g_pRenderEngine->isAlphaBlendingEnabled();
    g_pRenderEngine->disableAlphaBlending();
 

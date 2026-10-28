@@ -333,6 +333,8 @@ bool osd_load_resources()
    return true;
 }
 
+static bool s_bMSPOSDImagesLoadedSmall = false;
+
 void osd_reload_msp_resources()
 {
    if ( g_idImgMSPOSDBetaflight > 0 )
@@ -359,6 +361,8 @@ void osd_reload_msp_resources()
       g_idImgMSPOSDArdupilot = g_pRenderEngine->loadImage("res/msp_osd_ardu720.png");
       g_idImgMSPOSDPitLab = g_pRenderEngine->loadImage("res/msp_osd_pitlab720.png");
    }
+   s_bMSPOSDImagesLoadedSmall = ( g_pRenderEngine->getScreenHeight() <= 800 );
+
    Preferences* p = get_Preferences();
    if ( NULL != p )
    {
@@ -367,6 +371,18 @@ void osd_reload_msp_resources()
       g_pRenderEngine->changeImageHue(g_idImgMSPOSDArdupilot, p->iColorOSD[0], p->iColorOSD[1], p->iColorOSD[2]);
       g_pRenderEngine->changeImageHue(g_idImgMSPOSDPitLab, p->iColorOSD[0], p->iColorOSD[1], p->iColorOSD[2]);
    }
+}
+
+// Reloads the MSP OSD font atlases if the render surface size changed since
+// they were loaded (the selected atlas variant depends on the surface height:
+// small font atlases for heights of 800 pixels and below, large ones above).
+void osd_ensure_msposd_resources()
+{
+   bool bSmall = ( g_pRenderEngine->getScreenHeight() <= 800 );
+   if ( bSmall == s_bMSPOSDImagesLoadedSmall )
+      return;
+   log_line("[OSD] Render surface height changed; reloading the MSP OSD font atlases.");
+   osd_reload_msp_resources();
 }
 
 void osd_apply_preferences()
