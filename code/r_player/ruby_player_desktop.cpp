@@ -125,6 +125,8 @@ static u32 s_uBytesRead = 0;
 static u32 s_uBytesPushed = 0;
 static u32 s_uDecodedFrames = 0;
 static u32 s_uTimeLastLog = 0;
+static u32 s_uTimeLastDecodedHeartbeatLog = 0;
+static u32 s_uTimeLastStreamHeartbeatLog = 0;
 
 
 static void _player_handle_signal(int iSignal)
@@ -194,6 +196,16 @@ static GstFlowReturn _player_on_new_sample_shm(GstAppSink* pAppsink, gpointer pD
       (int)GST_VIDEO_INFO_PLANE_STRIDE(&vInfo, 2),
       0);
    s_uShmFrameSlot++;
+
+   // Periodic heartbeat: proves that the player is alive and actually
+   // decoding and publishing frames. Without it, a stalled pipeline is
+   // invisible in the logs (the central side shows a frozen video either
+   // way).
+   if ( 0 == s_uTimeLastDecodedHeartbeatLog || (g_TimeNow - s_uTimeLastDecodedHeartbeatLog) >= 10000 )
+   {
+      s_uTimeLastDecodedHeartbeatLog = g_TimeNow;
+      log_line("[PlayerDesktop] Video decode heartbeat: %u bytes read, %u bytes pushed, %u frames decoded.", s_uBytesRead, s_uBytesPushed, s_uDecodedFrames);
+   }
 
    gst_buffer_unmap(pBuffer, &map);
    gst_sample_unref(pSample);
@@ -576,6 +588,13 @@ static int _player_run_pipe()
          }
          if ( 0 != _player_push_buffer(s_uReadBuffer, iRead) )
             break;
+         // Periodic heartbeat on the input side only: shows if video data
+         // stops arriving from the station even if the pipeline is stalled.
+         if ( 0 == s_uTimeLastStreamHeartbeatLog || (g_TimeNow - s_uTimeLastStreamHeartbeatLog) >= 10000 )
+         {
+            s_uTimeLastStreamHeartbeatLog = g_TimeNow;
+            log_line("[PlayerDesktop] Video stream heartbeat: %u bytes read.", s_uBytesRead);
+         }
          continue;
       }
 

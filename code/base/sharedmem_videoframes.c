@@ -46,6 +46,7 @@ int s_iSharedMemVideoReadFd = 0;
 type_shared_mem_video_header* s_pSharedMemVideoRead = NULL;
 long s_lSharedMemVideoReadSize = 0;
 u32 s_uSharedMemVideoLastReadFrameSeq = 0;
+static ino_t s_uSharedMemVideoReadInode = 0;
 
 // The first versions were capped at 1920x1080: any video resolution above
 // 1080p was silently rejected in sharedmem_video_frames_write_frame() and the
@@ -78,9 +79,83 @@ static long shm_video_frames_compute_slot_size()
    return lSize;
 }
 
+static void shm_video_frames_init_header()
+{
+   s_pSharedMemVideoWrite->uMagic = SHM_VIDEO_FRAMES_MAGIC;
+   s_pSharedMemVideoWrite->uVersion = SHM_VIDEO_FRAMES_VERSION;
+   s_pSharedMemVideoWrite->uSlotsCount = SHM_VIDEO_FRAMES_SLOTS_COUNT;
+   s_pSharedMemVideoWrite->uPublishedFrameIndex = 0;
+   s_pSharedMemVideoWrite->uPublishedFrameSeq = 0;
+   s_pSharedMemVideoWrite->uWriteCounter = 0;
+   s_pSharedMemVideoWrite->uStreamsCount = 0;
+   s_pSharedMemVideoWrite->uReserve = 0;
+}
+
+// The video streamer (the player) is recreated whenever the video resolution
+// or codec changes, and each instance opens the shared memory for writing.
+// If it unconditionally destroyed and recreated the shared memory object,
+// readers (the central controller, which attaches to it once) would keep
+// their mapping of the now removed object that is never updated anymore:
+// the video would freeze on the last frame rendered until the whole
+// application is restarted.
+// For this reason, if an existing object with the same layout (magic,
+// version, slots count, size) is present, it is reused and the writer
+// continues the frame publish sequence from where the previous streamer
+// instance left it. The ring slots content is ignored (it can hold frames
+// from the previous instance), and the frames written by the new instance
+// seamlessly take over.
+static bool shm_video_frames_try_reuse_existing_writer()
+{
+   int fd = shm_open(SYSTEM_SHARED_MEM_VIDEO_FRAMES, O_RDWR, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
+   if ( fd < 0 )
+      return false;
+
+   long lSize = SIZE_HEADER + SHM_VIDEO_FRAMES_SLOTS_COUNT*sizeof(type_shared_mem_video_slot_meta) + SHM_VIDEO_FRAMES_SLOTS_COUNT*SIZE_SLOT;
+
+   struct stat st;
+   if ( 0 != fstat(fd, &st) )
+   {
+      close(fd);
+      return false;
+   }
+   if ( (long)st.st_size != lSize )
+   {
+      close(fd);
+      return false;
+   }
+
+   s_pSharedMemVideoWrite = (type_shared_mem_video_header*)mmap(NULL, lSize, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+   if ( s_pSharedMemVideoWrite == (void*)-1 || NULL == s_pSharedMemVideoWrite )
+   {
+      s_pSharedMemVideoWrite = NULL;
+      close(fd);
+      return false;
+   }
+
+   if ( s_pSharedMemVideoWrite->uMagic != SHM_VIDEO_FRAMES_MAGIC ||
+        s_pSharedMemVideoWrite->uVersion != SHM_VIDEO_FRAMES_VERSION ||
+        s_pSharedMemVideoWrite->uSlotsCount != SHM_VIDEO_FRAMES_SLOTS_COUNT )
+   {
+      munmap(s_pSharedMemVideoWrite, lSize);
+      s_pSharedMemVideoWrite = NULL;
+      close(fd);
+      return false;
+   }
+
+   s_iSharedMemVideoWriteFd = fd;
+   s_lSharedMemVideoWriteSize = lSize;
+   log_line("[SharedMemVideo] Reusing the existing shared memory object for video frames writing (%ld bytes). No frame is published yet.", lSize);
+   s_pSharedMemVideoWrite->uStreamsCount = 0;
+   __sync_synchronize();
+   return true;
+}
+
 int sharedmem_video_frames_open_for_write()
 {
    if ( 0 != s_iSharedMemVideoWriteFd )
+      return 0;
+
+   if ( shm_video_frames_try_reuse_existing_writer() )
       return 0;
 
    long lSize = SIZE_HEADER + SHM_VIDEO_FRAMES_SLOTS_COUNT*sizeof(type_shared_mem_video_slot_meta) + SHM_VIDEO_FRAMES_SLOTS_COUNT*SIZE_SLOT;
@@ -115,12 +190,7 @@ int sharedmem_video_frames_open_for_write()
    s_lSharedMemVideoWriteSize = lSize;
 
    memset(s_pSharedMemVideoWrite, 0, lSize);
-   s_pSharedMemVideoWrite->uMagic = SHM_VIDEO_FRAMES_MAGIC;
-   s_pSharedMemVideoWrite->uVersion = SHM_VIDEO_FRAMES_VERSION;
-   s_pSharedMemVideoWrite->uSlotsCount = SHM_VIDEO_FRAMES_SLOTS_COUNT;
-   s_pSharedMemVideoWrite->uPublishedFrameIndex = 0;
-   s_pSharedMemVideoWrite->uWriteCounter = 0;
-   s_pSharedMemVideoWrite->uStreamsCount = 0;
+   shm_video_frames_init_header();
    return 0;
 }
 
@@ -148,6 +218,24 @@ int sharedmem_video_frames_open_for_read()
       return -1;
    s_iSharedMemVideoReadFd = res;
 
+   struct stat st;
+   if ( 0 == fstat(s_iSharedMemVideoReadFd, &st) )
+      s_uSharedMemVideoReadInode = st.st_ino;
+   else
+      s_uSharedMemVideoReadInode = 0;
+
+   // Validate that the object matches this build's layout, else reading the
+   // planes would fault (mapping of a smaller object).
+   if ( (long)st.st_size != lSize )
+   {
+      log_softerror_and_alarm("[SharedMemVideo] The existing shared memory object for video frames has an unexpected size: %ld (expected %ld). Ignoring it.", (long)st.st_size, lSize);
+      close(s_iSharedMemVideoReadFd);
+      s_iSharedMemVideoReadFd = 0;
+      s_pSharedMemVideoRead = NULL;
+      s_uSharedMemVideoReadInode = 0;
+      return -1;
+   }
+
    s_pSharedMemVideoRead = (type_shared_mem_video_header*)mmap(NULL, lSize, PROT_READ, MAP_SHARED, s_iSharedMemVideoReadFd, 0);
    if ( s_pSharedMemVideoRead == (void*)-1 || NULL == s_pSharedMemVideoRead )
    {
@@ -171,6 +259,7 @@ void sharedmem_video_frames_close_read()
    close(s_iSharedMemVideoReadFd);
    s_iSharedMemVideoReadFd = 0;
    s_pSharedMemVideoRead = NULL;
+   s_uSharedMemVideoReadInode = 0;
    s_uSharedMemVideoLastReadFrameSeq = 0;
 }
 
@@ -215,7 +304,29 @@ int sharedmem_video_frames_read_latest_frame(u8* pOutY, u8* pOutU, u8* pOutV, in
 {
    if ( NULL == s_pSharedMemVideoRead )
       return 0;
+
+   // Detect if the shared memory object was replaced (for example destroyed
+   // and recreated by an older version of the writer, or by a binary update
+   // with a changed layout): a mapping of the old (unlinked) object keeps
+   // working but is never updated by the new writer, so the video would
+   // appear frozen without this check.
+   struct stat st;
+   if ( 0 == fstat(s_iSharedMemVideoReadFd, &st) )
+   if ( st.st_ino != s_uSharedMemVideoReadInode && 0 != s_uSharedMemVideoReadInode )
+   {
+      log_line("[SharedMemVideo] The shared memory object for video frames was replaced by the writer. Re-opening it.");
+      sharedmem_video_frames_close_read();
+      if ( 0 != sharedmem_video_frames_open_for_read() )
+      {
+         // The object might have been removed by the writer between
+         // close and open. Try again on the next read call.
+         return 0;
+      }
+   }
+
    if ( s_pSharedMemVideoRead->uMagic != SHM_VIDEO_FRAMES_MAGIC )
+      return 0;
+   if ( s_pSharedMemVideoRead->uVersion != SHM_VIDEO_FRAMES_VERSION )
       return 0;
    u32 seq = s_pSharedMemVideoRead->uPublishedFrameSeq;
    if ( 0 == seq || seq == s_uSharedMemVideoLastReadFrameSeq )

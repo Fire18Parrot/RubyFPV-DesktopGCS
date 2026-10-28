@@ -552,6 +552,29 @@ void _rx_video_output_open_pipe_to_streamer()
 {
    log_line("[VideoOutput] Opening video output pipe to streamer write endpoint: %s", FIFO_RUBY_STATION_VIDEO_STREAM_DISPLAY);
 
+   // Remove stale bytes left in the FIFO: if the previous streamer stopped
+   // reading data (for example it hung or was restarted while video data was
+   // written to the pipe), that data can still be in the FIFO buffer. A new
+   // streamer would otherwise receive bytes from the previous video stream
+   // (or a torn partial write) before the new stream data, typically
+   // rendering a stale garbage frame.
+   int fdTemp = open(FIFO_RUBY_STATION_VIDEO_STREAM_DISPLAY, O_RDONLY | O_NONBLOCK);
+   if ( fdTemp >= 0 )
+   {
+      u8 szDrainBuff[4096];
+      int iDrained = 0;
+      for(;;)
+      {
+         int iBytes = read(fdTemp, szDrainBuff, sizeof(szDrainBuff));
+         if ( iBytes <= 0 )
+            break;
+         iDrained += iBytes;
+      }
+      close(fdTemp);
+      if ( iDrained > 0 )
+         log_line("[VideoOutput] Drained %d bytes of stale video data from the streamer pipe.", iDrained);
+   }
+
    _rx_video_output_check_start_streamer();
 
    if ( NULL == s_pPipeVideoOutputBuffer )
