@@ -152,6 +152,7 @@ struct sockaddr_in s_LocalVideoPlayuerUDPSocketAddr;
 
 u32 s_uTimeStartLocalVideoPlayer = 0;
 u32 s_uTimeLastOutputDataToLocalVideoPlayer = 0;
+u32 s_uTimeLastVideoOutputPipeSlowLog = 0;
 u32 s_uLastTimeComputedOutputBitrate = 0;
 u32 s_uOutputBitrateToLocalVideoStreamerPipe = 0;
 u32 s_uOutputBitrateToLocalVideoPlayerUDP = 0;
@@ -425,10 +426,16 @@ static int _rx_video_output_rtsp_ensure_pipe_open()
 {
    if ( -1 != s_fPipeVideoOutToRTSPServer )
       return 0;
-   // The open fails with ENXIO until the RTSP server process has opened its
-   // read endpoint. Retry later.
+   // Opened read/write: an open for write only succeeds after the RTSP server
+   // opened its read endpoint, and the server's own open for read blocks until
+   // a writer appears. If a client connected before this process started
+   // writing, the server's pipeline waited forever on that open and the media
+   // it cached stayed broken. An open read/write always succeeds immediately,
+   // so whichever process starts first, nobody waits on anybody. The stale
+   // bytes buffered while the server is absent are discarded by closing and
+   // reopening this endpoint when the server is relaunched.
    ruby_ensure_fifo_pipe(FIFO_RUBY_STATION_VIDEO_STREAM_RTSP);
-   s_fPipeVideoOutToRTSPServer = open(FIFO_RUBY_STATION_VIDEO_STREAM_RTSP, O_WRONLY | O_NONBLOCK);
+   s_fPipeVideoOutToRTSPServer = open(FIFO_RUBY_STATION_VIDEO_STREAM_RTSP, O_RDWR | O_NONBLOCK);
    if ( -1 != s_fPipeVideoOutToRTSPServer )
       log_line("[VideoOutput] Opened the video output pipe to the RTSP server.");
    return s_fPipeVideoOutToRTSPServer;
@@ -439,9 +446,43 @@ void _rx_video_output_start_rtsp_server();
 static void* _thread_rtsp_output_writer(void* argument)
 {
    log_line("[VideoOutputThread] Started worker thread for RTSP output writer.");
-   u32 uTimeLastRelaunchCheck = 0;
+   u32 uTimeLastServerCheck = 0;
    while ( ! s_bRxVideoOutputStreamerThreadMustStop )
    {
+      // Periodic RTSP server liveness check. With the pipe opened read/write,
+      // a dead server can not be detected through the pipe any more: the
+      // writes to a full pipe just return EAGAIN, and the pipe never returns
+      // EPIPE while this end is opened for reading too. So the process list
+      // is checked explicitly and a missing server is relaunched (only if
+      // its binary exists).
+      u32 uTimeNow = get_current_timestamp_ms();
+      if ( uTimeNow > uTimeLastServerCheck + 5000 )
+      {
+         uTimeLastServerCheck = uTimeNow;
+         char szPIDs[128];
+         szPIDs[0] = 0;
+         hw_process_get_pids("ruby_rtsp_server", szPIDs);
+         removeTrailingNewLines(szPIDs);
+         if ( strlen(szPIDs) <= 2 )
+         {
+            log_softerror_and_alarm("[VideoOutput] The RTSP server process is not running.");
+            if ( -1 != s_fPipeVideoOutToRTSPServer )
+            {
+               // Closing the pipe also discards the bytes that were buffered
+               // into it while the server was gone.
+               close(s_fPipeVideoOutToRTSPServer);
+               s_fPipeVideoOutToRTSPServer = -1;
+            }
+            // Only relaunch it if the binary is present: it might not be
+            // deployed at all.
+            if ( 0 == access("./ruby_rtsp_server", X_OK) )
+            {
+               log_line("[VideoOutput] Relaunching the RTSP server process...");
+               _rx_video_output_start_rtsp_server();
+            }
+         }
+      }
+
       if ( s_uRTSPOutputRingReadPos >= s_uRTSPOutputRingWritePos )
       {
          hardware_sleep_ms(5);
@@ -453,34 +494,9 @@ static void* _thread_rtsp_output_writer(void* argument)
          _rx_video_output_rtsp_ensure_pipe_open();
          if ( -1 == s_fPipeVideoOutToRTSPServer )
          {
-            // The RTSP server process is not there (or has no read endpoint
-            // opened). If it's gone for a while, relaunch it: it might have
-            // crashed or was never started.
-            u32 uTimeNow = get_current_timestamp_ms();
-            if ( 0 == uTimeLastRelaunchCheck )
-               uTimeLastRelaunchCheck = uTimeNow;
-            if ( uTimeNow > uTimeLastRelaunchCheck + 3000 )
-            {
-               uTimeLastRelaunchCheck = uTimeNow;
-               char szPIDs[128];
-               szPIDs[0] = 0;
-               hw_process_get_pids("ruby_rtsp_server", szPIDs);
-               removeTrailingNewLines(szPIDs);
-               if ( strlen(szPIDs) <= 2 )
-               {
-                  // Only relaunch it if the binary is present: it might not
-                  // be deployed at all.
-                  if ( 0 == access("./ruby_rtsp_server", X_OK) )
-                  {
-                     log_line("[VideoOutput] The RTSP server process is not running. Relaunching it...");
-                     _rx_video_output_start_rtsp_server();
-                  }
-               }
-            }
             hardware_sleep_ms(100);
             continue;
          }
-         uTimeLastRelaunchCheck = 0;
       }
 
       // Write as much as possible from the ring. The write can block until
@@ -550,9 +566,30 @@ void _rx_video_output_stop_rtsp_server()
    if ( -1 != s_fPipeVideoOutToRTSPServer )
       close(s_fPipeVideoOutToRTSPServer);
    s_fPipeVideoOutToRTSPServer = -1;
-   char szComm[256];
-   snprintf(szComm, sizeof(szComm)/sizeof(szComm[0]), "pgrep 'ruby_rtsp_server' | awk '{print $2}' | xargs kill -9 2>/dev/null");
-   hw_execute_bash_command(szComm, NULL);
+   // The process name is longer than 15 characters, so a search on the short
+   // process name does not find it. Use the same process search as everywhere
+   // else (it falls back on the full command line) and kill the resulting
+   // PIDs.
+   char szPIDs[128];
+   szPIDs[0] = 0;
+   hw_process_get_pids("ruby_rtsp_server", szPIDs);
+   removeTrailingNewLines(szPIDs);
+   // Normalize the separators (pidof returns the PIDs space separated, pgrep
+   // returns them newline separated) and terminate the processes.
+   for( u32 i=0; i<strlen(szPIDs); i++ )
+      if ( szPIDs[i] == '\n' || szPIDs[i] == '\r' )
+         szPIDs[i] = ' ';
+   if ( strlen(szPIDs) > 2 )
+   {
+      // The server exits cleanly on SIGTERM, SIGKILL is only a fallback for
+      // a process that does not react to the graceful termination.
+      char szComm[256];
+      snprintf(szComm, sizeof(szComm)/sizeof(szComm[0]), "kill -TERM %s 2>/dev/null", szPIDs);
+      hw_execute_bash_command(szComm, NULL);
+      hardware_sleep_ms(300);
+      snprintf(szComm, sizeof(szComm)/sizeof(szComm[0]), "kill -9 %s 2>/dev/null", szPIDs);
+      hw_execute_bash_command(szComm, NULL);
+   }
    hardware_sleep_ms(50);
 }
 
@@ -803,10 +840,14 @@ void _rx_video_output_open_pipe_to_streamer()
    while ( iRetries > 0 )
    {
       iRetries--;
-      // The FIFO is opened in non-blocking mode: a blocking open would wait
-      // forever for the reader (the player) if the player fails to start.
-      // The writes are blocking, as before, so the video is not lost when the
-      // player is slow: the flag is cleared after the open.
+      // The FIFO is opened in non-blocking mode, and the writes stay
+      // non-blocking as well: a blocking open would wait forever for the
+      // reader (the player) if the player fails to start, and a blocking
+      // write would freeze the radio processing loop if the player becomes
+      // slow or stalled (it runs on the same CPU and can not keep up with
+      // the radio link). Video data that does not fit into the FIFO is
+      // dropped instead (see the write path below); the player recovers
+      // from the next keyframe.
       s_fPipeVideoOutToStreamer = open(FIFO_RUBY_STATION_VIDEO_STREAM_DISPLAY, O_CREAT | O_WRONLY | O_NONBLOCK, 0666);
       if ( s_fPipeVideoOutToStreamer < 0 )
       {
@@ -822,19 +863,11 @@ void _rx_video_output_open_pipe_to_streamer()
          hardware_sleep_ms(10);
          continue;
       }
-      // The writes to the FIFO must block, so the video is not lost when the
-      // player is slower than the radio link.
-      fcntl(s_fPipeVideoOutToStreamer, F_SETFL, 0);
       break;
    }
    log_line("[VideoOutput] Opened video output pipe to streamer write endpoint: %s", FIFO_RUBY_STATION_VIDEO_STREAM_DISPLAY);
    log_line("[VideoOutput] Video output pipe to streamer flags: %s", str_get_pipe_flags(fcntl(s_fPipeVideoOutToStreamer, F_GETFL)));
 
-   //if ( RUBY_PIPES_EXTRA_FLAGS & O_NONBLOCK )
-   //if ( 0 != fcntl(s_fPipeVideoOutToStreamer, F_SETFL, O_NONBLOCK) )
-   //   log_softerror_and_alarm("[IPC] Failed to set nonblock flag on PIC channel %s write endpoint.", FIFO_RUBY_STATION_VIDEO_STREAM_DISPLAY);
-   //log_line("[VideoOutput] Video streamer FIFO write endpoint pipe new flags: %s", str_get_pipe_flags(fcntl(s_fPipeVideoOutToStreamer, F_GETFL)));
-  
    log_line("[VideoOutput] Video streamer pipe FIFO default size: %d bytes", fcntl(s_fPipeVideoOutToStreamer, F_GETPIPE_SZ));
    fcntl(s_fPipeVideoOutToStreamer, F_SETPIPE_SZ, 250000);
    log_line("[VideoOutput] Video streamer FIFO new size: %d bytes", fcntl(s_fPipeVideoOutToStreamer, F_GETPIPE_SZ));
@@ -1318,8 +1351,10 @@ void _rx_video_output_to_video_streamer_pipe(u8* pBuffer, int iLength, bool bWai
             memmove(s_pPipeVideoOutputBuffer, &(s_pPipeVideoOutputBuffer[iRes]), iBytesLeft);
             s_iPipeVideoOutputPos = iBytesLeft;
          }
-         else
+         else if ( iRes >= 0 )
             s_iPipeVideoOutputPos = 0;
+         // On a full FIFO (nothing written, EAGAIN) all the staged data is
+         // kept as well and the whole chunk is retried on the next call.
       }
    }
 
@@ -1339,6 +1374,40 @@ if ( iRes == iExpectedWriteResult )
          send_alarm_to_central(ALARM_ID_CONTROLLER_IO_ERROR, 0,0);
       }
       //fsync(s_fPipeVideoOutToStreamer);
+      return;
+   }
+
+   // The FIFO to the player is opened non-blocking: a slow or stalled player
+   // results in partial writes or in a full FIFO (nothing written, EAGAIN),
+   // never in a blocking write. That is intended: the radio processing loop
+   // must never wait on the player. The dropped video is recovered by the
+   // player from the next keyframe, so backpressure from the player must not
+   // trigger alarms or a streamer restart either.
+   if ( iRes >= 0 )
+   {
+      // A partial write: for a staged frame the remaining bytes are kept in
+      // the staging buffer (see above) and retried on the next call.
+      s_uOutputBitrateToLocalVideoStreamerPipe += (u32)iRes*8;
+      s_uTotalBytesToLocalVideoStreamerPipe += (unsigned long long)iRes;
+      s_uTimeStartGettingVideoIOErrors = 0;
+      if ( g_TimeNow > s_uTimeLastVideoOutputPipeSlowLog + 1000 )
+      {
+         s_uTimeLastVideoOutputPipeSlowLog = g_TimeNow;
+         log_line("[VideoOutput] The player pipe is full, wrote %d of %d bytes. The player is slower than the video stream.", iRes, iExpectedWriteResult);
+      }
+      return;
+   }
+
+   if ( EAGAIN == errno )
+   {
+      // The FIFO is full: the player did not consume the previous data yet.
+      // Nothing was written, the staged data is kept and retried on the next
+      // call. No alarm and no restart: a slow player recovers by itself.
+      if ( g_TimeNow > s_uTimeLastVideoOutputPipeSlowLog + 1000 )
+      {
+         s_uTimeLastVideoOutputPipeSlowLog = g_TimeNow;
+         log_line("[VideoOutput] The player pipe is full, video data to the player is temporarily dropped.");
+      }
       return;
    }
 

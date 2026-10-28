@@ -117,6 +117,7 @@ static GstElement* s_pAppSrc = NULL;
 static GstElement* s_pDecoder = NULL;
 static GstElement* s_pParser = NULL;
 static GstElement* s_pConvert = NULL;
+static GstElement* s_pScale = NULL;
 static GstElement* s_pSink = NULL;
 static GstBus* s_pBus = NULL;
 static bool s_bVideoPadLinked = false;
@@ -349,6 +350,13 @@ static int _player_create_pipeline(bool bLiveStream)
          s_pParser = gst_element_factory_make("h265parse", "ruby-video-parser");
       }
       s_pSink = gst_element_factory_make("appsink", "ruby-video-shm-sink");
+      // The display output is capped to full HD: the vehicle can stream up to
+      // 4K, and software decoding plus publishing 4K raw frames into the
+      // shared memory ring exceeds the CPU budget of a single core. The scale
+      // element brings the decoded frames down to at most full HD. The raw
+      // video stream itself is not affected: the recording and the other
+      // outputs get the untouched stream.
+      s_pScale = gst_element_factory_make("videoscale", "ruby-video-scale");
    }
    else
    {
@@ -391,10 +399,28 @@ static int _player_create_pipeline(bool bLiveStream)
          log_error_and_alarm("[PlayerDesktop] Failed to link the software decoder to the video converter.");
          return -1;
       }
-      if ( ! gst_element_link(s_pConvert, s_pSink) )
+      if ( NULL != s_pScale )
       {
-         log_error_and_alarm("[PlayerDesktop] Failed to link the video converter to the shared memory sink.");
-         return -1;
+         gst_bin_add(GST_BIN(s_pPipeline), s_pScale);
+         if ( ! gst_element_link(s_pConvert, s_pScale) )
+         {
+            log_error_and_alarm("[PlayerDesktop] Failed to link the video converter to the video scaler.");
+            return -1;
+         }
+         if ( ! gst_element_link(s_pScale, s_pSink) )
+         {
+            log_error_and_alarm("[PlayerDesktop] Failed to link the video scaler to the shared memory sink.");
+            return -1;
+         }
+      }
+      else
+      {
+         log_softerror_and_alarm("[PlayerDesktop] Failed to create the video scaler, the video output will not be scaled down.");
+         if ( ! gst_element_link(s_pConvert, s_pSink) )
+         {
+            log_error_and_alarm("[PlayerDesktop] Failed to link the video converter to the shared memory sink.");
+            return -1;
+         }
       }
       // No dynamic pads in the explicit chain: the codec is known.
       s_bCodecDetected = true;
@@ -425,7 +451,9 @@ static int _player_create_pipeline(bool bLiveStream)
    {
       // Raw I420 frames are pushed to the shared memory ring. New frames
       // replace old ones; the consumer reads only the latest published frame.
-      GstCaps* pCapsSink = gst_caps_from_string("video/x-raw,format=I420");
+      // The width/height range caps the display output at full HD (see the
+      // scale element above).
+      GstCaps* pCapsSink = gst_caps_from_string("video/x-raw,format=I420,width=(int)[16,1920],height=(int)[16,1080]");
       g_object_set(s_pSink, "caps", pCapsSink, "emit-signals", TRUE, "sync", FALSE, "drop", TRUE, "max-buffers", (guint)3, NULL);
       if ( NULL != pCapsSink )
          gst_caps_unref(pCapsSink);
@@ -457,7 +485,7 @@ static int _player_create_pipeline(bool bLiveStream)
    s_pBus = gst_pipeline_get_bus(GST_PIPELINE(s_pPipeline));
    gst_bus_add_watch(s_pBus, _player_bus_callback, NULL);
 
-   log_line("[PlayerDesktop] GStreamer pipeline created: appsrc ! decodebin ! videoconvert ! video sink");
+   log_line("[PlayerDesktop] GStreamer pipeline created: appsrc ! parser ! decoder ! videoconvert %s ! video sink", (NULL != s_pScale) ? "! videoscale" : "");
    return 0;
 }
 
