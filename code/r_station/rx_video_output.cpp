@@ -87,6 +87,13 @@ int s_fPipeVideoOutToStreamer = -1;
 u8* s_pPipeVideoOutputBuffer = NULL;
 int s_iPipeVideoOutputPos = 0;
 
+// RTSP output: the raw received video stream is also fed to the RTSP server
+// process (ruby_rtsp_server), which serves it to external GCS software over
+// rtsp://<station ip>:<port>/video
+int s_fPipeVideoOutToRTSPServer = -1;
+u32 s_uRTSPBytesDropped = 0;
+u32 s_uRTSPLaunchedH265Flag = 0xFFFFFFFF; // the codec flag used at the last RTSP server launch
+
 shared_mem_process_stats* s_pSMProcessStatsMPPPlayer = NULL;
 sem_t* s_pSemaphoreSMData = NULL;
 u8* s_pSMVideoStreamerWrite = NULL;
@@ -397,6 +404,200 @@ void _rx_video_output_check_start_streamer()
       log_line("[VideoOutput] Streamer is not running, start it...");
       rx_video_output_start_video_streamer();
    }
+}
+
+
+// ----------------------------------------------------------------------------
+// RTSP output
+// The video data is copied into a ring buffer and a worker thread writes it
+// to the RTSP server process pipe, so the RTSP output can never slow down or
+// block the local video output and the radio processing loops.
+
+#define RTSP_OUTPUT_RING_SIZE (1024*1024)
+#define RTSP_OUTPUT_MAX_CHUNK 300000
+static u8* s_pRTSPOutputRing = NULL;
+static volatile unsigned long long s_uRTSPOutputRingWritePos = 0;
+static volatile unsigned long long s_uRTSPOutputRingReadPos = 0;
+static pthread_t s_ThreadIdRTSPWriter;
+static bool s_bRTSPWriterThreadStarted = false;
+
+static int _rx_video_output_rtsp_ensure_pipe_open()
+{
+   if ( -1 != s_fPipeVideoOutToRTSPServer )
+      return 0;
+   // The open fails with ENXIO until the RTSP server process has opened its
+   // read endpoint. Retry later.
+   ruby_ensure_fifo_pipe(FIFO_RUBY_STATION_VIDEO_STREAM_RTSP);
+   s_fPipeVideoOutToRTSPServer = open(FIFO_RUBY_STATION_VIDEO_STREAM_RTSP, O_WRONLY | O_NONBLOCK);
+   if ( -1 != s_fPipeVideoOutToRTSPServer )
+      log_line("[VideoOutput] Opened the video output pipe to the RTSP server.");
+   return s_fPipeVideoOutToRTSPServer;
+}
+
+void _rx_video_output_start_rtsp_server();
+
+static void* _thread_rtsp_output_writer(void* argument)
+{
+   log_line("[VideoOutputThread] Started worker thread for RTSP output writer.");
+   u32 uTimeLastRelaunchCheck = 0;
+   while ( ! s_bRxVideoOutputStreamerThreadMustStop )
+   {
+      if ( s_uRTSPOutputRingReadPos >= s_uRTSPOutputRingWritePos )
+      {
+         hardware_sleep_ms(5);
+         continue;
+      }
+
+      if ( -1 == s_fPipeVideoOutToRTSPServer )
+      {
+         _rx_video_output_rtsp_ensure_pipe_open();
+         if ( -1 == s_fPipeVideoOutToRTSPServer )
+         {
+            // The RTSP server process is not there (or has no read endpoint
+            // opened). If it's gone for a while, relaunch it: it might have
+            // crashed or was never started.
+            u32 uTimeNow = get_current_timestamp_ms();
+            if ( 0 == uTimeLastRelaunchCheck )
+               uTimeLastRelaunchCheck = uTimeNow;
+            if ( uTimeNow > uTimeLastRelaunchCheck + 3000 )
+            {
+               uTimeLastRelaunchCheck = uTimeNow;
+               char szPIDs[128];
+               szPIDs[0] = 0;
+               hw_process_get_pids("ruby_rtsp_server", szPIDs);
+               removeTrailingNewLines(szPIDs);
+               if ( strlen(szPIDs) <= 2 )
+               {
+                  // Only relaunch it if the binary is present: it might not
+                  // be deployed at all.
+                  if ( 0 == access("./ruby_rtsp_server", X_OK) )
+                  {
+                     log_line("[VideoOutput] The RTSP server process is not running. Relaunching it...");
+                     _rx_video_output_start_rtsp_server();
+                  }
+               }
+            }
+            hardware_sleep_ms(100);
+            continue;
+         }
+         uTimeLastRelaunchCheck = 0;
+      }
+
+      // Write as much as possible from the ring. The write can block until
+      // the RTSP server consumes the data, it does not block the video
+      // output loop.
+      unsigned long long uRead = s_uRTSPOutputRingReadPos;
+      unsigned long long uWrite = s_uRTSPOutputRingWritePos;
+      u32 uAvailable = (u32)(uWrite - uRead);
+      if ( uAvailable > 0 )
+      {
+         u32 uOffset = (u32)(uRead % RTSP_OUTPUT_RING_SIZE);
+         u32 uContiguous = RTSP_OUTPUT_RING_SIZE - uOffset;
+         if ( uContiguous > uAvailable )
+            uContiguous = uAvailable;
+         int iRes = write(s_fPipeVideoOutToRTSPServer, &(s_pRTSPOutputRing[uOffset]), uContiguous);
+         if ( iRes > 0 )
+            s_uRTSPOutputRingReadPos += iRes;
+         else if ( iRes < 0 )
+         {
+            if ( EPIPE == errno || EBADF == errno )
+            {
+               log_softerror_and_alarm("[VideoOutput] The RTSP server pipe is broken (%s). Closing it, will reopen later.", strerror(errno));
+               close(s_fPipeVideoOutToRTSPServer);
+               s_fPipeVideoOutToRTSPServer = -1;
+            }
+            else if ( EAGAIN != errno )
+               hardware_sleep_ms(2);
+         }
+      }
+   }
+   log_line("[VideoOutputThread] Stopped worker thread for RTSP output writer.");
+   return NULL;
+}
+
+void _rx_video_output_start_rtsp_server()
+{
+   u32 uExtraFlags = 0;
+   if ( NULL != g_pCurrentModel )
+      uExtraFlags = g_pCurrentModel->video_params.uVideoExtraFlags;
+   s_uRTSPLaunchedH265Flag = uExtraFlags & VIDEO_FLAG_GENERATE_H265;
+
+   // Do not start it twice (for example when an instance from a previous
+   // run of the application is still running).
+   char szPIDs[128];
+   szPIDs[0] = 0;
+   hw_process_get_pids("ruby_rtsp_server", szPIDs);
+   removeTrailingNewLines(szPIDs);
+   if ( strlen(szPIDs) > 2 )
+   {
+      log_line("[VideoOutput] RTSP server process is already running (PID: %s). Do nothing.", szPIDs);
+      return;
+   }
+
+   ruby_ensure_fifo_pipe(FIFO_RUBY_STATION_VIDEO_STREAM_RTSP);
+
+   char szParams[64];
+   szParams[0] = 0;
+   if ( 0 != s_uRTSPLaunchedH265Flag )
+      strcpy(szParams, "-h265");
+   log_line("[VideoOutput] Starting RTSP server process, params: [%s]", szParams);
+   hw_execute_ruby_process_wait("", "ruby_rtsp_server", szParams, NULL, 0);
+}
+
+void _rx_video_output_stop_rtsp_server()
+{
+   log_line("[VideoOutput] Stopping the RTSP server process...");
+   if ( -1 != s_fPipeVideoOutToRTSPServer )
+      close(s_fPipeVideoOutToRTSPServer);
+   s_fPipeVideoOutToRTSPServer = -1;
+   char szComm[256];
+   snprintf(szComm, sizeof(szComm)/sizeof(szComm[0]), "pgrep 'ruby_rtsp_server' | awk '{print $2}' | xargs kill -9 2>/dev/null");
+   hw_execute_bash_command(szComm, NULL);
+   hardware_sleep_ms(50);
+}
+
+// Copies the raw video data into the RTSP output ring buffer. Called from
+// the video output loop, it never blocks.
+void _rx_video_output_feed_rtsp(u8* pBuffer, int iLength)
+{
+   if ( NULL == pBuffer || iLength <= 0 )
+      return;
+   if ( NULL == s_pRTSPOutputRing )
+   {
+      s_pRTSPOutputRing = (u8*)malloc(RTSP_OUTPUT_RING_SIZE);
+      if ( NULL == s_pRTSPOutputRing )
+         return;
+      memset(s_pRTSPOutputRing, 0, RTSP_OUTPUT_RING_SIZE);
+   }
+   if ( ! s_bRTSPWriterThreadStarted )
+   {
+      s_bRTSPWriterThreadStarted = true;
+      if ( 0 != pthread_create(&s_ThreadIdRTSPWriter, NULL, &_thread_rtsp_output_writer, NULL) )
+      {
+         log_softerror_and_alarm("[VideoOutput] Failed to create RTSP output writer thread.");
+         s_bRTSPWriterThreadStarted = false;
+         return;
+      }
+   }
+
+   unsigned long long uWrite = s_uRTSPOutputRingWritePos;
+   unsigned long long uRead = s_uRTSPOutputRingReadPos;
+   if ( (u32)(uWrite - uRead) + (u32)iLength > RTSP_OUTPUT_RING_SIZE )
+   {
+      // The ring is full: the RTSP server is too slow (or not running). Drop
+      // the data, it does not affect the local video output.
+      s_uRTSPBytesDropped += (u32)iLength;
+      return;
+   }
+   u32 uOffset = (u32)(uWrite % RTSP_OUTPUT_RING_SIZE);
+   u32 uContiguous = RTSP_OUTPUT_RING_SIZE - uOffset;
+   if ( uContiguous > (u32)iLength )
+      uContiguous = (u32)iLength;
+   memcpy(&(s_pRTSPOutputRing[uOffset]), pBuffer, uContiguous);
+   if ( uContiguous < (u32)iLength )
+      memcpy(&(s_pRTSPOutputRing[0]), &(pBuffer[uContiguous]), (u32)iLength - uContiguous);
+   __sync_synchronize();
+   s_uRTSPOutputRingWritePos = uWrite + (unsigned long long)iLength;
 }
 
 static void * _thread_rx_video_output_streamer_watchdog(void *argument)
@@ -723,6 +924,10 @@ void rx_video_output_init()
    else
       log_line("[VideoOutput] Opened semaphore for video streamer to signal alarms.");
 
+   #if defined(HW_PLATFORM_LINUX_GENERIC)
+   _rx_video_output_start_rtsp_server();
+   #endif
+
    s_VideoUSBOutputInfo.bVideoUSBTethering = false;
    s_VideoUSBOutputInfo.TimeLastVideoUSBTetheringCheck = 0;
    s_VideoUSBOutputInfo.szIPUSBVideo[0] = 0;
@@ -788,7 +993,6 @@ void rx_video_output_init()
 void rx_video_output_uninit()
 {
    log_line("[VideoOutput] Uninit start...");
-
    if ( -1 != s_iLocalVideoPlayerUDPSocket )
    {
       close(s_iLocalVideoPlayerUDPSocket);
@@ -822,7 +1026,8 @@ void rx_video_output_uninit()
    s_pRxVideoSemaphoreRestartVideoStreamer = NULL;
 
    rx_video_output_stop_video_streamer();
-   
+   _rx_video_output_stop_rtsp_server();
+
    if ( -1 != s_VideoETHOutputInfo.s_ForwardETHSocketVideo )
       close(s_VideoETHOutputInfo.s_ForwardETHSocketVideo);
    s_VideoETHOutputInfo.s_ForwardETHSocketVideo = -1;
@@ -1060,6 +1265,12 @@ void _rx_video_output_to_video_streamer_pipe(u8* pBuffer, int iLength, bool bWai
 {
    if ( (NULL == pBuffer) || (iLength == 0) )
       return;
+
+   // Feed the raw video data also to the RTSP server (if it's running).
+   // This must be done before the local video output state checks, so the
+   // RTSP output is independent of the local video output state.
+   _rx_video_output_feed_rtsp(pBuffer, iLength);
+
    if ( (-1 == s_fPipeVideoOutToStreamer) || s_bRxVideoOutputStreamerMustReinitialize )
       return;
 
@@ -1511,6 +1722,16 @@ void rx_video_output_signal_restart_streamer()
    }
 
    adaptive_video_pause(5000);
+
+   // If the video codec changed, the RTSP server must be restarted: its
+   // pipeline is fixed on the codec set at launch.
+   u32 uExtraFlags = (NULL != g_pCurrentModel) ? g_pCurrentModel->video_params.uVideoExtraFlags : 0;
+   if ( (uExtraFlags & VIDEO_FLAG_GENERATE_H265) != s_uRTSPLaunchedH265Flag )
+   {
+      log_line("[VideoOutput] Video codec changed. Restarting the RTSP server process...");
+      _rx_video_output_stop_rtsp_server();
+      _rx_video_output_start_rtsp_server();
+   }
 
    rx_video_output_disable_streamer_output();
    s_bRxVideoOutputStreamerMustReinitialize = true;

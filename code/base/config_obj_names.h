@@ -9,6 +9,7 @@
 #define FIFO_RUBY_STATION_VIDEO_STREAM_DISPLAY "/tmp/ruby/fifovideo_disp"
 #define FIFO_RUBY_STATION_VIDEO_STREAM_RECORDING "/tmp/ruby/fifovideo_rec"
 #define FIFO_RUBY_STATION_VIDEO_STREAM_ETH "/tmp/ruby/fifovideo_eth"
+#define FIFO_RUBY_STATION_VIDEO_STREAM_RTSP "/tmp/ruby/fifovideo_rtsp"
 
 // The named pipes used for the inter process communication
 #define FIFO_RUBY_ROUTER_TO_CENTRAL "/tmp/ruby/fiforoutercentral"

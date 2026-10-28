@@ -198,6 +198,10 @@ code/r_player/%.o: code/r_player/%.cpp
 code/r_player/ruby_player_desktop.o: code/r_player/ruby_player_desktop.cpp
 	$(CXX) $(_CPPFLAGS) $(CFLAGS_RENDERER) $(INCLUDE_CENTRAL) $(GST_CFLAGS) -c -o $@ $<
 
+# The RTSP video server uses GStreamer (with the RTSP server library)
+code/r_rtsp/ruby_rtsp_server.o: code/r_rtsp/ruby_rtsp_server.cpp
+	$(CXX) $(_CPPFLAGS) $(CFLAGS_RENDERER) $(GST_CFLAGS) `pkg-config --cflags gstreamer-rtsp-server-1.0` -c -o $@ $<
+
 code/public/utils/core_plugins_utils.o: code/public/utils/core_plugins_utils.c
 	$(CC) $(_CFLAGS) -c -o $@ $<
 
@@ -236,7 +240,7 @@ CENTRAL_ALL := $(FOLDER_CENTRAL)/notifications.o $(FOLDER_CENTRAL)/launchers_con
 CENTRAL_RADIO := $(FOLDER_RADIO)/radiopackets2.o $(FOLDER_RADIO)/radiopackets_short.o $(FOLDER_RADIO)/radiotap.o $(FOLDER_BASE)/tx_powers.o
 
 ifeq ($(RUBY_BUILD_ENV),desktop)
-all: vehicle station ruby_i2c ruby_central
+all: vehicle station ruby_i2c ruby_central ruby_rtsp_server
 else
 all: vehicle station ruby_i2c ruby_central tests
 endif
@@ -246,7 +250,7 @@ vehicle: ruby_start ruby_utils ruby_tx_telemetry ruby_rt_vehicle
 ifeq ($(RUBY_BUILD_ENV),radxa)
 station: ruby_start ruby_utils ruby_controller ruby_rt_station ruby_tx_rc ruby_rx_telemetry ruby_player_radxa
 else ifeq ($(RUBY_BUILD_ENV),desktop)
-station: ruby_start ruby_utils ruby_controller ruby_rt_station ruby_tx_rc ruby_rx_telemetry ruby_player_desktop
+station: ruby_start ruby_utils ruby_controller ruby_rt_station ruby_tx_rc ruby_rx_telemetry ruby_player_desktop ruby_rtsp_server
 else
 station: ruby_start ruby_utils ruby_controller ruby_rt_station ruby_tx_rc ruby_rx_telemetry
 endif
@@ -332,6 +336,9 @@ ruby_player_radxa:code/r_player/ruby_player_radxa.o code/r_player/mpp_core.o $(F
 
 ruby_player_desktop: code/r_player/ruby_player_desktop.o $(FOLDER_BASE)/base.o $(FOLDER_BASE)/config.o $(FOLDER_BASE)/config_paths.o $(FOLDER_BASE)/hardware.o $(FOLDER_BASE)/hardware_procs.o $(FOLDER_BASE)/hardware_files.o $(FOLDER_BASE)/utils.o $(FOLDER_BASE)/encr.o $(FOLDER_BASE)/gpio.o $(FOLDER_BASE)/hardware_i2c.o $(FOLDER_BASE)/hardware_radio.o $(FOLDER_BASE)/hardware_radio_serial.o $(FOLDER_BASE)/hardware_serial.o $(FOLDER_BASE)/hardware_radio_sik.o $(FOLDER_BASE)/hardware_radio_txpower.o $(FOLDER_BASE)/radio_capabilities.o $(FOLDER_BASE)/radio_profiles.o $(FOLDER_BASE)/ruby_ipc.o $(FOLDER_BASE)/shared_mem.o $(FOLDER_BASE)/controller_rt_info.o $(FOLDER_BASE)/vehicle_rt_info.o $(FOLDER_BASE)/ctrl_preferences.o $(FOLDER_BASE)/ctrl_interfaces.o $(FOLDER_BASE)/alarms.o $(FOLDER_BASE)/commands.o $(FOLDER_BASE)/ctrl_settings.o $(FOLDER_UTILS)/utils_controller.o $(FOLDER_UTILS)/utils_vehicle.o $(FOLDER_COMMON)/string_utils.o $(FOLDER_COMMON)/relay_utils.o $(FOLDER_BASE)/models.o $(FOLDER_BASE)/models_list.o $(FOLDER_BASE)/tx_powers.o $(FOLDER_BASE)/sharedmem_videoframes.o
 	$(CXX) $(_CPPFLAGS) $(CFLAGS_RENDERER) $(GST_CFLAGS) -o $@ $^ $(_LDFLAGS) $(GST_LIBS) -ldl
+
+ruby_rtsp_server: code/r_rtsp/ruby_rtsp_server.o $(FOLDER_BASE)/base.o $(FOLDER_BASE)/config.o $(FOLDER_BASE)/config_paths.o $(FOLDER_BASE)/hardware.o $(FOLDER_BASE)/hardware_procs.o $(FOLDER_BASE)/hardware_files.o $(FOLDER_BASE)/utils.o $(FOLDER_BASE)/encr.o $(FOLDER_BASE)/gpio.o $(FOLDER_BASE)/hardware_i2c.o $(FOLDER_BASE)/hardware_radio.o $(FOLDER_BASE)/hardware_radio_serial.o $(FOLDER_BASE)/hardware_serial.o $(FOLDER_BASE)/hardware_radio_sik.o $(FOLDER_BASE)/hardware_radio_txpower.o $(FOLDER_BASE)/radio_capabilities.o $(FOLDER_BASE)/radio_profiles.o $(FOLDER_BASE)/ruby_ipc.o $(FOLDER_BASE)/shared_mem.o $(FOLDER_BASE)/controller_rt_info.o $(FOLDER_BASE)/vehicle_rt_info.o $(FOLDER_BASE)/ctrl_preferences.o $(FOLDER_BASE)/ctrl_interfaces.o $(FOLDER_BASE)/alarms.o $(FOLDER_BASE)/commands.o $(FOLDER_BASE)/ctrl_settings.o $(FOLDER_UTILS)/utils_controller.o $(FOLDER_UTILS)/utils_vehicle.o $(FOLDER_COMMON)/string_utils.o $(FOLDER_COMMON)/relay_utils.o $(FOLDER_BASE)/models.o $(FOLDER_BASE)/models_list.o $(FOLDER_BASE)/tx_powers.o
+	$(CXX) $(_CPPFLAGS) $(CFLAGS_RENDERER) $(GST_CFLAGS) -o $@ $^ $(_LDFLAGS) $(GST_LIBS) `pkg-config --libs gstreamer-rtsp-server-1.0` -ldl
 
 ifeq ($(RUBY_BUILD_ENV),radxa)
 tests: test_port_rx test_port_tx test_link

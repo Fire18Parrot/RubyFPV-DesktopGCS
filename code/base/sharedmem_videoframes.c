@@ -394,7 +394,18 @@ int sharedmem_video_frames_read_latest_frame(u8* pOutY, u8* pOutU, u8* pOutV, in
       memcpy(pOutV + (long)y*(iWidth/2), pSrcV + (long)y*(iWidth/2), iWidth/2);
 
    __sync_synchronize();
+   // Detect a torn frame: the writer wrapped around the whole ring and
+   // started overwriting the slot we are copying from while the copy was in
+   // progress. Presenting such a frame would show a flash of two half
+   // updated frames. Discard it; a newer published frame is presented on
+   // the next call.
    u32 seqAfter = s_pSharedMemVideoRead->uPublishedFrameSeq;
+   u32 idxAfter = s_pSharedMemVideoRead->uPublishedFrameIndex;
+   if ( idxAfter == (u32)iSlot && seqAfter != seq )
+   {
+      s_uSharedMemVideoLastReadFrameSeq = seqAfter;
+      return 0;
+   }
    s_uSharedMemVideoLastReadFrameSeq = seq;
 
    if ( NULL != piWidth )
