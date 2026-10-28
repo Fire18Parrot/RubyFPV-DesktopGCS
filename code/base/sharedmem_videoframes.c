@@ -146,6 +146,14 @@ static bool shm_video_frames_try_reuse_existing_writer()
    s_lSharedMemVideoWriteSize = lSize;
    log_line("[SharedMemVideo] Reusing the existing shared memory object for video frames writing (%ld bytes). No frame is published yet.", lSize);
    s_pSharedMemVideoWrite->uStreamsCount = 0;
+   // Reset the publishing state as well: readers detect a sequence going
+   // backwards (or a sequence different than the one they last saw) and
+   // immediately present the new writer's frames. It also prevents readers
+   // that attach while no new frame was published yet from presenting a
+   // stale frame from a previous streaming session.
+   s_pSharedMemVideoWrite->uWriteCounter = 0;
+   s_pSharedMemVideoWrite->uPublishedFrameIndex = 0;
+   s_pSharedMemVideoWrite->uPublishedFrameSeq = 0;
    __sync_synchronize();
    return true;
 }
@@ -203,7 +211,16 @@ void sharedmem_video_frames_close_write()
    close(s_iSharedMemVideoWriteFd);
    s_iSharedMemVideoWriteFd = 0;
    s_pSharedMemVideoWrite = NULL;
-   shm_unlink(SYSTEM_SHARED_MEM_VIDEO_FRAMES);
+   // Do not unlink the shared memory object here. On a clean restart of the
+   // player (for example a codec or resolution change) the next player
+   // instance reuses the existing object (same layout, same inode) and
+   // continues publishing frames into it, so the readers keep their mapping
+   // and the new frames reach them immediately. Unlinking here would leave
+   // the readers with a mapping of a removed object that is never updated
+   // anymore: the video would freeze on the last frame until the whole
+   // application is restarted. The object is only replaced (unlinked and
+   // recreated) by sharedmem_video_frames_open_for_write() when the layout
+   // must change, and it is safely reused after an application restart.
 }
 
 int sharedmem_video_frames_open_for_read()
@@ -246,7 +263,11 @@ int sharedmem_video_frames_open_for_read()
       return -1;
    }
    s_lSharedMemVideoReadSize = lSize;
-   s_uSharedMemVideoLastReadFrameSeq = 0;
+   // Start from the sequence currently published in the object: frames from
+   // that sequence were published before this reader attached (for example
+   // stale frames from a previous application run) and must not be
+   // presented as current video.
+   s_uSharedMemVideoLastReadFrameSeq = s_pSharedMemVideoRead->uPublishedFrameSeq;
    return 0;
 }
 
@@ -310,17 +331,30 @@ int sharedmem_video_frames_read_latest_frame(u8* pOutY, u8* pOutU, u8* pOutV, in
    // with a changed layout): a mapping of the old (unlinked) object keeps
    // working but is never updated by the new writer, so the video would
    // appear frozen without this check.
-   struct stat st;
-   if ( 0 == fstat(s_iSharedMemVideoReadFd, &st) )
-   if ( st.st_ino != s_uSharedMemVideoReadInode && 0 != s_uSharedMemVideoReadInode )
+   // Note: fstat() on our own fd would always return the inode of the old
+   // object (the mapping stays valid even after the object was unlinked), so
+   // the object must be opened and stat'ed by name to detect the replacement.
+   if ( 0 != s_uSharedMemVideoReadInode && NULL != s_pSharedMemVideoRead )
    {
-      log_line("[SharedMemVideo] The shared memory object for video frames was replaced by the writer. Re-opening it.");
-      sharedmem_video_frames_close_read();
-      if ( 0 != sharedmem_video_frames_open_for_read() )
+      struct stat st;
+      int fdCheck = shm_open(SYSTEM_SHARED_MEM_VIDEO_FRAMES, O_RDONLY, 0);
+      if ( fdCheck >= 0 )
       {
-         // The object might have been removed by the writer between
-         // close and open. Try again on the next read call.
-         return 0;
+         bool bReopen = false;
+         if ( 0 == fstat(fdCheck, &st) && st.st_ino != s_uSharedMemVideoReadInode )
+            bReopen = true;
+         close(fdCheck);
+         if ( bReopen )
+         {
+            log_line("[SharedMemVideo] The shared memory object for video frames was replaced by the writer. Re-opening it.");
+            sharedmem_video_frames_close_read();
+            if ( 0 != sharedmem_video_frames_open_for_read() )
+            {
+               // The object might have been removed by the writer between
+               // close and open. Try again on the next read call.
+               return 0;
+            }
+         }
       }
    }
 
