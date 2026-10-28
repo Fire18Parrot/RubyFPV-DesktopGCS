@@ -174,6 +174,15 @@ void rx_video_output_start_video_streamer()
       return;
    }
 
+   // A leftover instance of the video streamer process might still be running
+   // (for example if this process was killed and restarted while the video
+   // streamer was running, or if a previous instance is exiting slowly). A
+   // leftover instance steals the video stream data from the new one (they
+   // are multiple readers on the same FIFO pipe) and wastes CPU (it runs at
+   // real time priority). Stop any leftover instance before starting a new
+   // one.
+   hw_stop_process(s_szOutputVideoStreamerFilename);
+
    if ( NULL != s_pSemaphoreSMData )
       sem_close(s_pSemaphoreSMData);
    s_pSemaphoreSMData = NULL;
@@ -442,11 +451,13 @@ static int _rx_video_output_rtsp_ensure_pipe_open()
 }
 
 void _rx_video_output_start_rtsp_server();
+void _rx_video_output_stop_rtsp_server();
 
 static void* _thread_rtsp_output_writer(void* argument)
 {
    log_line("[VideoOutputThread] Started worker thread for RTSP output writer.");
    u32 uTimeLastServerCheck = 0;
+   u32 uTimeLastSuccessfulWrite = 0;
    while ( ! s_bRxVideoOutputStreamerThreadMustStop )
    {
       // Periodic RTSP server liveness check. With the pipe opened read/write,
@@ -485,6 +496,9 @@ static void* _thread_rtsp_output_writer(void* argument)
 
       if ( s_uRTSPOutputRingReadPos >= s_uRTSPOutputRingWritePos )
       {
+         // No data to send. Reset the stall detection timer: a period with
+         // no data to send does not count as a stalled server.
+         uTimeLastSuccessfulWrite = get_current_timestamp_ms();
          hardware_sleep_ms(5);
          continue;
       }
@@ -499,9 +513,8 @@ static void* _thread_rtsp_output_writer(void* argument)
          }
       }
 
-      // Write as much as possible from the ring. The write can block until
-      // the RTSP server consumes the data, it does not block the video
-      // output loop.
+      // Write as much as possible from the ring. The write is non-blocking,
+      // so it can never slow down the video output loop.
       unsigned long long uRead = s_uRTSPOutputRingReadPos;
       unsigned long long uWrite = s_uRTSPOutputRingWritePos;
       u32 uAvailable = (u32)(uWrite - uRead);
@@ -511,9 +524,14 @@ static void* _thread_rtsp_output_writer(void* argument)
          u32 uContiguous = RTSP_OUTPUT_RING_SIZE - uOffset;
          if ( uContiguous > uAvailable )
             uContiguous = uAvailable;
+         if ( 0 == uTimeLastSuccessfulWrite )
+            uTimeLastSuccessfulWrite = get_current_timestamp_ms();
          int iRes = write(s_fPipeVideoOutToRTSPServer, &(s_pRTSPOutputRing[uOffset]), uContiguous);
          if ( iRes > 0 )
+         {
             s_uRTSPOutputRingReadPos += iRes;
+            uTimeLastSuccessfulWrite = get_current_timestamp_ms();
+         }
          else if ( iRes < 0 )
          {
             if ( EPIPE == errno || EBADF == errno )
@@ -522,8 +540,33 @@ static void* _thread_rtsp_output_writer(void* argument)
                close(s_fPipeVideoOutToRTSPServer);
                s_fPipeVideoOutToRTSPServer = -1;
             }
-            else if ( EAGAIN != errno )
+            else
+            {
+               // The pipe can be full (EAGAIN: the RTSP server did not
+               // consume the data yet) or the write can fail for another
+               // reason. Sleep a little on any failed write: a retry loop
+               // without a sleep here would spin at 100% CPU and, running at
+               // the same real time priority and on the same core as the
+               // radio processing main loop, it would starve it.
                hardware_sleep_ms(2);
+               // A stalled RTSP server (its pipeline is broken and it
+               // consumes nothing any more) never recovers by itself. If
+               // nothing was written for a long time, stop the server: the
+               // periodic liveness check above will relaunch a fresh one,
+               // which also discards the stale bytes buffered in the pipe.
+               u32 uTimeNowWrite = get_current_timestamp_ms();
+               if ( (0 != uTimeLastSuccessfulWrite) && (uTimeNowWrite > uTimeLastSuccessfulWrite + 10000) )
+               {
+                  log_softerror_and_alarm("[VideoOutput] The RTSP server did not consume any data for over 10 seconds. Restarting it...");
+                  if ( -1 != s_fPipeVideoOutToRTSPServer )
+                  {
+                     close(s_fPipeVideoOutToRTSPServer);
+                     s_fPipeVideoOutToRTSPServer = -1;
+                  }
+                  _rx_video_output_stop_rtsp_server();
+                  uTimeLastSuccessfulWrite = 0;
+               }
+            }
          }
       }
    }
@@ -609,7 +652,13 @@ void _rx_video_output_feed_rtsp(u8* pBuffer, int iLength)
    if ( ! s_bRTSPWriterThreadStarted )
    {
       s_bRTSPWriterThreadStarted = true;
-      if ( 0 != pthread_create(&s_ThreadIdRTSPWriter, NULL, &_thread_rtsp_output_writer, NULL) )
+      // SCHED_OTHER on the auxiliary core: this thread only writes to a
+      // pipe, it must never run at real time priority (a spinning real time
+      // thread starves the radio processing main loop, pinned to the same
+      // core).
+      pthread_attr_t attrRTSPWriter;
+      hw_init_worker_thread_attrs(&attrRTSPWriter, CORE_AFFINITY_OTHERS, -1, SCHED_OTHER, 0, "RTSP output writer");
+      if ( 0 != pthread_create(&s_ThreadIdRTSPWriter, &attrRTSPWriter, &_thread_rtsp_output_writer, NULL) )
       {
          log_softerror_and_alarm("[VideoOutput] Failed to create RTSP output writer thread.");
          s_bRTSPWriterThreadStarted = false;
