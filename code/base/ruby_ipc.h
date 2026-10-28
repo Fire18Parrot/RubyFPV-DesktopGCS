@@ -22,6 +22,13 @@ extern "C" {
 
 
 int ruby_init_ipc_channels();
+
+// Makes sure the given path is a real FIFO pipe (named pipe). Creates it if
+// it's missing, and if it exists but is not a FIFO (typically a regular file
+// left over from an open(O_CREAT) call on a platform where the FIFO pipes
+// are not created at startup, like the desktop targets), removes and
+// recreates it as a FIFO. Returns 1 on success, 0 on failure.
+int ruby_ensure_fifo_pipe(const char* szPipePath);
 void ruby_drain_all_ipc_channels();
 void ruby_clear_all_ipc_channels();
 

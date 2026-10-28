@@ -91,6 +91,7 @@
 #include "../base/config_obj_names.h"
 #include "../base/hardware.h"
 #include "../base/hardware_procs.h"
+#include "../base/ruby_ipc.h"
 #include "../base/sharedmem_videoframes.h"
 
 static volatile sig_atomic_t s_bQuit = false;
@@ -506,6 +507,14 @@ static int _player_run_pipe()
 {
    log_line("[PlayerDesktop] Opening the video stream pipe: %s", FIFO_RUBY_STATION_VIDEO_STREAM_DISPLAY);
 
+   // Make sure the pipe is a real FIFO pipe, not a leftover regular file
+   // created by an open(O_CREAT) on a target where the FIFO pipes are not
+   // created at startup (see ruby_ensure_fifo_pipe()). Reading a regular
+   // file breaks the stream: it grows unbounded and after a restart the
+   // player opens it at offset zero, reading the whole historical content
+   // first.
+   ruby_ensure_fifo_pipe(FIFO_RUBY_STATION_VIDEO_STREAM_DISPLAY);
+
    // The pipe is created by the station when it opens the write end, so it
    // might not exist yet when the player starts. The player waits for it, the
    // stream can start at any time.
@@ -566,6 +575,7 @@ static int _player_run_pipe()
          log_softerror_and_alarm("[PlayerDesktop] Error on the video stream pipe. Waiting for it to be reopened.");
          close(fd);
          fd = -1;
+         ruby_ensure_fifo_pipe(FIFO_RUBY_STATION_VIDEO_STREAM_DISPLAY);
          while ( (fd < 0) && (! s_bQuit) )
          {
             fd = open(FIFO_RUBY_STATION_VIDEO_STREAM_DISPLAY, O_RDONLY | O_NONBLOCK);

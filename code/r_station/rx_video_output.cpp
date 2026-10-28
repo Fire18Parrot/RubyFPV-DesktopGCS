@@ -552,6 +552,13 @@ void _rx_video_output_open_pipe_to_streamer()
 {
    log_line("[VideoOutput] Opening video output pipe to streamer write endpoint: %s", FIFO_RUBY_STATION_VIDEO_STREAM_DISPLAY);
 
+   // Make sure the pipe is a real FIFO pipe. On some targets (desktop) the
+   // FIFO pipes are not created at startup, and an open(O_CREAT) on a
+   // missing pipe creates a regular file instead, which breaks all the pipe
+   // semantics (unbounded growth, no kernel pipe buffer, readers restart at
+   // offset zero on the whole historical content).
+   ruby_ensure_fifo_pipe(FIFO_RUBY_STATION_VIDEO_STREAM_DISPLAY);
+
    // Remove stale bytes left in the FIFO: if the previous streamer stopped
    // reading data (for example it hung or was restarted while video data was
    // written to the pipe), that data can still be in the FIFO buffer. A new
@@ -599,7 +606,7 @@ void _rx_video_output_open_pipe_to_streamer()
       // forever for the reader (the player) if the player fails to start.
       // The writes are blocking, as before, so the video is not lost when the
       // player is slow: the flag is cleared after the open.
-      s_fPipeVideoOutToStreamer = open(FIFO_RUBY_STATION_VIDEO_STREAM_DISPLAY, O_CREAT | O_WRONLY | O_NONBLOCK);
+      s_fPipeVideoOutToStreamer = open(FIFO_RUBY_STATION_VIDEO_STREAM_DISPLAY, O_CREAT | O_WRONLY | O_NONBLOCK, 0666);
       if ( s_fPipeVideoOutToStreamer < 0 )
       {
          if ( (ENXIO != errno) && (0 != iRetries) )

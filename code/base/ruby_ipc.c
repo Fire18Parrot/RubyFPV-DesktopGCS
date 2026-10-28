@@ -38,6 +38,7 @@
 #include "../radio/radiopackets2.h"
 
 #include <sys/types.h>
+#include <sys/stat.h>
 #include <sys/ipc.h>
 #include <sys/msg.h>
 #include <errno.h>
@@ -187,6 +188,42 @@ void _check_ruby_ipc_consistency()
    }
 }
 
+
+int ruby_ensure_fifo_pipe(const char* szPipePath)
+{
+   struct stat st;
+   if ( 0 == stat(szPipePath, &st) )
+   {
+      if ( S_ISFIFO(st.st_mode) )
+         return 1;
+      // The path exists but is not a FIFO pipe (typically a regular file
+      // created by an open(O_CREAT) on a platform where the FIFO pipes are
+      // not created at startup, like the desktop targets). It must be
+      // removed: a regular file breaks all the pipe semantics (unbounded
+      // growth, no kernel pipe buffer, and after a process restart the
+      // readers open it at offset zero and read the whole historical content
+      // first, which can stall the video stream for a very long time).
+      log_line("[IPC] %s exists but is not a FIFO pipe (type: %o, size: %ld bytes). Removing and recreating it as a FIFO pipe.",
+         szPipePath, (unsigned int)(st.st_mode & 07777), (long)st.st_size);
+      if ( 0 != unlink(szPipePath) )
+      {
+         log_error_and_alarm("[IPC] Failed to remove %s for recreating it as a FIFO pipe, error %d (%s).", szPipePath, errno, strerror(errno));
+         return 0;
+      }
+   }
+
+   if ( 0 != mkfifo(szPipePath, 0666) )
+   {
+      // EEXIST: created by a concurrent process in the meantime. It will be
+      // validated again on the next call to this function.
+      if ( EEXIST == errno )
+         return 1;
+      log_error_and_alarm("[IPC] Failed to create FIFO pipe %s, error %d (%s).", szPipePath, errno, strerror(errno));
+      return 0;
+   }
+   log_line("[IPC] Created FIFO pipe %s.", szPipePath);
+   return 1;
+}
 
 int ruby_init_ipc_channels()
 {
