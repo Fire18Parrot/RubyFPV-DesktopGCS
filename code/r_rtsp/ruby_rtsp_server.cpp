@@ -126,20 +126,22 @@ static void _on_media_element_message(GstRTSPMedia* pMedia, GstMessage* pMsg, gp
    }
 }
 
+// Called when a media pipeline is created for a connecting client (the
+// RTSP server has no "connect" signal in this version, media-configure is
+// the equivalent hook). Enable rate control on the media: when a client
+// cannot keep up with the stream (its socket send buffer backs up and the
+// pipeline blocks), the server installs a drop probe and drops the data of
+// that slow transport instead of blocking the pipeline. Without rate control
+// a single stalled client stops the shared pipeline for ALL the clients: no
+// client gets any data until the stalled one unsticks or the server is
+// restarted.
 static void _on_media_configure(GstRTSPMediaFactory* pFactory, GstRTSPMedia* pMedia, gpointer user_data)
 {
    (void)pFactory;
    (void)user_data;
    g_signal_connect(pMedia, "element-message", G_CALLBACK(_on_media_element_message), NULL);
-   log_line("[RTSPServer] Media pipeline configured.");
-}
-
-static void _on_client_connect(GstRTSPMediaFactory* pFactory, GstRTSPMedia* pMedia, gpointer user_data)
-{
-   (void)pFactory;
-   (void)pMedia;
-   (void)user_data;
-   log_line("[RTSPServer] A client connected to the stream.");
+   gst_rtsp_media_set_rate_control(pMedia, TRUE);
+   log_line("[RTSPServer] Media pipeline configured for a client (rate control enabled).");
 }
 
 static void _parse_arguments(int argc, char* argv[])
@@ -230,9 +232,24 @@ int main(int argc, char* argv[])
    // reconnecting client does not have to rebuild and preroll it again.
    gst_rtsp_media_factory_set_stop_on_disconnect(pFactory, FALSE);
 
+   // Serve the video with UDP only (uniccast or multicast), never TCP.
+   // The RTSP data sink writes to the client's socket; a TCP client that
+   // stops reading (a player buffering or a paused display) fills its
+   // socket buffer and the blocking write stops the SHARED pipeline, so no
+   // client receives anything until that client unsticks or the server is
+   // restarted. UDP sends never block: a slow client just drops the packets
+   // it cannot read, and the other clients keep getting the stream.
+   gst_rtsp_media_factory_set_protocols(pFactory,
+      (GstRTSPLowerTrans)(GST_RTSP_LOWER_TRANS_UDP | GST_RTSP_LOWER_TRANS_UDP_MCAST));
+
+   // Addresses/ports for multicast clients (clients may request a multicast
+   // address; without an address pool the server refuses such requests).
+   GstRTSPAddressPool* pAddrPool = gst_rtsp_address_pool_new();
+   gst_rtsp_media_factory_set_address_pool(pFactory, pAddrPool);
+   gst_object_unref(pAddrPool);
+
    // Log client connects and watch the pipeline messages (errors, EOS).
    g_signal_connect(pFactory, "media-configure", G_CALLBACK(_on_media_configure), NULL);
-   g_signal_connect(pFactory, "connect", G_CALLBACK(_on_client_connect), NULL);
 
    gst_rtsp_mount_points_add_factory(pMounts, "/video", pFactory);
    g_object_unref(pMounts);
@@ -243,7 +260,7 @@ int main(int argc, char* argv[])
       log_error_and_alarm("[RTSPServer] Failed to attach the RTSP server on port %s. Is the port already in use?", szPort);
       return -1;
    }
-   log_line("[RTSPServer] Attached, listening on port %s, mount point: /video", szPort);
+   log_line("[RTSPServer] Attached, listening on port %s, mount point: /video (UDP transport only)", szPort);
    log_line("[RTSPServer] Connect with: rtsp://<this computer ip>:%s/video", szPort);
 
    GMainLoop* pLoop = g_main_loop_new(NULL, FALSE);
