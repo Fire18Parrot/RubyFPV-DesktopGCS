@@ -83,6 +83,65 @@ static void _handle_signal(int sig)
       g_main_loop_quit(s_pMainLoop);
 }
 
+// Messages from the media pipeline. Logs everything and exits the server on
+// pipeline errors or end-of-stream: a shared pipeline that has failed can
+// never recover by itself (it would serve nothing to any connecting client).
+// The station watchdog relaunches a fresh server process a few seconds later.
+static void _on_media_element_message(GstRTSPMedia* pMedia, GstMessage* pMsg, gpointer user_data)
+{
+   (void)pMedia;
+   (void)user_data;
+
+   if ( GST_MESSAGE_ERROR == pMsg->type )
+   {
+      GError* pErr = NULL;
+      gchar* szDebug = NULL;
+      gst_message_parse_error(pMsg, &pErr, &szDebug);
+      log_softerror_and_alarm("[RTSPServer] Pipeline error from element [%s]: %s%s%s",
+         (NULL != pMsg->src) ? GST_OBJECT_NAME(pMsg->src) : "NULL", (NULL != pErr) ? pErr->message : "",
+         (NULL != szDebug) ? " | " : "", (NULL != szDebug) ? szDebug : "");
+      if ( NULL != pErr )
+         g_error_free(pErr);
+      if ( NULL != szDebug )
+         g_free(szDebug);
+      log_line("[RTSPServer] Exiting so the station can relaunch a fresh server.");
+      s_bQuit = true;
+      if ( NULL != s_pMainLoop )
+         g_main_loop_quit(s_pMainLoop);
+   }
+   else if ( GST_MESSAGE_EOS == pMsg->type )
+      log_softerror_and_alarm("[RTSPServer] The media pipeline got end of stream (EOS).");
+   else if ( GST_MESSAGE_WARNING == pMsg->type )
+   {
+      GError* pErr = NULL;
+      gchar* szDebug = NULL;
+      gst_message_parse_warning(pMsg, &pErr, &szDebug);
+      log_line("[RTSPServer] Pipeline warning from element [%s]: %s",
+         (NULL != pMsg->src) ? GST_OBJECT_NAME(pMsg->src) : "NULL",
+         (NULL != pErr) ? pErr->message : "");
+      if ( NULL != pErr )
+         g_error_free(pErr);
+      if ( NULL != szDebug )
+         g_free(szDebug);
+   }
+}
+
+static void _on_media_configure(GstRTSPMediaFactory* pFactory, GstRTSPMedia* pMedia, gpointer user_data)
+{
+   (void)pFactory;
+   (void)user_data;
+   g_signal_connect(pMedia, "element-message", G_CALLBACK(_on_media_element_message), NULL);
+   log_line("[RTSPServer] Media pipeline configured.");
+}
+
+static void _on_client_connect(GstRTSPMediaFactory* pFactory, GstRTSPMedia* pMedia, gpointer user_data)
+{
+   (void)pFactory;
+   (void)pMedia;
+   (void)user_data;
+   log_line("[RTSPServer] A client connected to the stream.");
+}
+
 static void _parse_arguments(int argc, char* argv[])
 {
    for( int i=1; i<argc; i++ )
@@ -170,6 +229,10 @@ int main(int argc, char* argv[])
    // Keep the pipeline alive when the last client disconnects, so a
    // reconnecting client does not have to rebuild and preroll it again.
    gst_rtsp_media_factory_set_stop_on_disconnect(pFactory, FALSE);
+
+   // Log client connects and watch the pipeline messages (errors, EOS).
+   g_signal_connect(pFactory, "media-configure", G_CALLBACK(_on_media_configure), NULL);
+   g_signal_connect(pFactory, "connect", G_CALLBACK(_on_client_connect), NULL);
 
    gst_rtsp_mount_points_add_factory(pMounts, "/video", pFactory);
    g_object_unref(pMounts);
