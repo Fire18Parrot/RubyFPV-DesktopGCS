@@ -1308,6 +1308,29 @@ void _rx_video_output_to_sharedmem(u8* pBuffer, u32 uLength, bool bWaitFullFrame
       log_line("[VideoTrace] SM: write_pos=%u, frame_end=%s", s_uSMVideoStreamWritePosition, bIsEndOfNALFrame?"Y":"N");
    }
 
+   // Latency attribution: when the station finished receiving the frame and
+   // when its last bytes were output to the video streamer SM. Also reports
+   // the per-frame timers that the vehicle stamped into the stream, if the
+   // vehicle developer flag for video stream timings is set. Needs controller
+   // debug stats enabled.
+   static u32 s_uLastFrameLatencyLog = 0;
+   if ( g_pControllerSettings->iEnableDebugStats && bIsEndOfNALFrame && g_TimeNow > s_uLastFrameLatencyLog + 2000 )
+   {
+      s_uLastFrameLatencyLog = g_TimeNow;
+      int iCurIndex = g_SMControllerDebugVideoRTInfo.iCurrentFrameBufferIndex;
+      u32 uRxStartTime = g_SMControllerDebugVideoRTInfo.uReceivedFrameStartTime[iCurIndex];
+      u32 uRxToOutputMs = ( (uRxStartTime != 0) && (g_TimeNow > uRxStartTime) ) ? (g_TimeNow - uRxStartTime) : 0;
+      int iPrevIndex = iCurIndex - 1;
+      if ( iPrevIndex < 0 )
+         iPrevIndex = SYSTEM_RT_INFO_INTERVALS_FRAMES - 1;
+      float fRxDurationMs = (float)g_SMControllerDebugVideoRTInfo.uReceivedFrameDurationTensMs[iPrevIndex] / 10.0f;
+      u32 uVehicleTimers = g_SMControllerDebugVideoRTInfo.uVideoFramesProcessingTimes[iPrevIndex];
+      log_line("[VideoLatency] SM: frame %u: received over %.1f ms, rx->output %u ms; vehicle timers: camera %u ms, others %u ms, video send %u ms, total %u ms, tx wait %u ms",
+         g_SMControllerDebugVideoRTInfo.uCurrentReceivedH264Frame, fRxDurationMs, uRxToOutputMs,
+         uVehicleTimers & 0x0F, (uVehicleTimers >> 4) & 0x0F, (uVehicleTimers >> 8) & 0xFF,
+         (uVehicleTimers >> 16) & 0xFF, (uVehicleTimers >> 24) & 0xFF);
+   }
+
    if ( uLength <= (SM_STREAMER_SIZE-s_uSMVideoStreamWritePosition) )
    {
       memcpy(&(s_pSMVideoStreamerWrite[s_uSMVideoStreamWritePosition]), pBuffer, uLength);

@@ -399,7 +399,7 @@ void VideoTxPacketsBuffer::setLastFrameTimers(u32 uTimeReadCamera, u32 uTimeSend
    m_uLastFrameTimers = (uTimeReadCamera & 0x0F) |
       ((uTimeSendOthers & 0x0F) << 4) |
       ((uTimeSendVideo & 0xFF) << 8) |
-      ((uTotalProcessingTime & 0xFF) << 16);
+      ((uTotalProcessingTime & 0xFF) << 16) |
       ((uTimeExpectedSendVideoTime & 0xFF) << 24);
 }
 

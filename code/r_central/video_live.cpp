@@ -118,6 +118,18 @@ void video_live_update()
    if ( 0 == iRes )
       return;
 
+   // Latency attribution: how old the published frame that is rendered right
+   // now is, measured from the publish stamp set by the desktop player. The
+   // timestamps are boot-referenced monotonic clocks, comparable across the
+   // player and this controller process.
+   static u32 s_uTimeLastFrameAgeLog = 0;
+   u32 uNowMs = get_current_timestamp_ms();
+   if ( uTimestamp != 0 && uNowMs > s_uTimeLastFrameAgeLog + 2000 )
+   {
+      s_uTimeLastFrameAgeLog = uNowMs;
+      log_line("[VideoLive] Latest video frame is %u ms old since published (%dx%d)", (uNowMs > uTimestamp) ? (uNowMs - uTimestamp) : 0, iWidth, iHeight);
+   }
+
    if ( (iWidth != s_iVideoLiveWidth) || (iHeight != s_iVideoLiveHeight) )
    {
       log_line("[VideoLive] New video frame size: %dx%d", iWidth, iHeight);

@@ -130,6 +130,13 @@ static u32 s_uTimeLastLog = 0;
 static u32 s_uTimeLastDecodedHeartbeatLog = 0;
 static u32 s_uTimeLastStreamHeartbeatLog = 0;
 
+// Decode-side latency measurement: time of the last bytes pushed into the
+// pipeline, and the delay of the last published frame since those push.
+static u32 s_uTimeLastPushMs = 0;
+static u32 s_uLastPublishDelayMs = 0;
+static u32 s_uPublishWindowStartMs = 0;
+static u32 s_uPublishWindowFrames = 0;
+
 
 static void _player_handle_signal(int iSignal)
 {
@@ -189,6 +196,10 @@ static GstFlowReturn _player_on_new_sample_shm(GstAppSink* pAppsink, gpointer pD
    u8* pU = map.data + (gsize)vInfo.offset[1];
    u8* pV = map.data + (gsize)vInfo.offset[2];
 
+   // Stamp the publish time, so the central UI can compute how old the frame
+   // it renders is (publish → render latency stage).
+   u32 uPublishTimeMs = get_current_timestamp_ms();
+
    sharedmem_video_frames_write_frame(
       (int)(s_uShmFrameSlot % SHM_VIDEO_FRAMES_SLOTS_COUNT),
       (int)GST_VIDEO_INFO_WIDTH(&vInfo), (int)GST_VIDEO_INFO_HEIGHT(&vInfo),
@@ -196,17 +207,32 @@ static GstFlowReturn _player_on_new_sample_shm(GstAppSink* pAppsink, gpointer pD
       (int)GST_VIDEO_INFO_PLANE_STRIDE(&vInfo, 0),
       (int)GST_VIDEO_INFO_PLANE_STRIDE(&vInfo, 1),
       (int)GST_VIDEO_INFO_PLANE_STRIDE(&vInfo, 2),
-      0);
+      uPublishTimeMs);
    s_uShmFrameSlot++;
+
+   // The delay between the last pushed bytes and this published decoded frame
+   // is the pipeline-internal latency (parse + decode + convert buffering).
+   if ( s_uTimeLastPushMs != 0 && uPublishTimeMs >= s_uTimeLastPushMs )
+      s_uLastPublishDelayMs = uPublishTimeMs - s_uTimeLastPushMs;
+   if ( s_uPublishWindowStartMs == 0 )
+      s_uPublishWindowStartMs = uPublishTimeMs;
+   s_uPublishWindowFrames++;
 
    // Periodic heartbeat: proves that the player is alive and actually
    // decoding and publishing frames. Without it, a stalled pipeline is
    // invisible in the logs (the central side shows a frozen video either
-   // way).
-   if ( 0 == s_uTimeLastDecodedHeartbeatLog || (g_TimeNow - s_uTimeLastDecodedHeartbeatLog) >= 10000 )
+   // way). It also reports the decode-side latency: how long after the last
+   // pushed bytes the newest frame was published, and the publish fps.
+   if ( 0 == s_uTimeLastDecodedHeartbeatLog || (uPublishTimeMs - s_uTimeLastDecodedHeartbeatLog) >= 10000 )
    {
-      s_uTimeLastDecodedHeartbeatLog = g_TimeNow;
-      log_line("[PlayerDesktop] Video decode heartbeat: %u bytes read, %u bytes pushed, %u frames decoded.", s_uBytesRead, s_uBytesPushed, s_uDecodedFrames);
+      float fPublishFps = 0.0f;
+      if ( s_uPublishWindowStartMs != 0 && uPublishTimeMs > s_uPublishWindowStartMs )
+         fPublishFps = (float)s_uPublishWindowFrames * 1000.0f / (float)(uPublishTimeMs - s_uPublishWindowStartMs);
+      s_uTimeLastDecodedHeartbeatLog = uPublishTimeMs;
+      log_line("[PlayerDesktop] Video decode heartbeat: %u bytes read, %u bytes pushed, %u frames decoded; publish fps %.1f, last frame published %u ms after last bytes pushed.",
+         s_uBytesRead, s_uBytesPushed, s_uDecodedFrames, fPublishFps, s_uLastPublishDelayMs);
+      s_uPublishWindowStartMs = uPublishTimeMs;
+      s_uPublishWindowFrames = 0;
    }
 
    gst_buffer_unmap(pBuffer, &map);
@@ -301,6 +327,10 @@ static int _player_push_buffer(const u8* pData, int iLength)
       return -1;
    }
    gst_buffer_fill(pBuffer, 0, pData, iLength);
+
+   // Remember when the newest bytes entered the pipeline, so the decode-side
+   // latency (push → published decoded frame) can be measured in the callback.
+   s_uTimeLastPushMs = get_current_timestamp_ms();
 
    GstFlowReturn iFlow = gst_app_src_push_buffer(GST_APP_SRC(s_pAppSrc), pBuffer);
    s_uBytesPushed += iLength;
